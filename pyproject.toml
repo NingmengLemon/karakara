@@ -1,0 +1,59 @@
+[project]
+name = "karakara"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = "==3.9.*"
+dependencies = [
+    "av>=15.1.0",
+    "demucs",
+    "faster-whisper>=1.2.1",
+    "funasr>=1.2.7",
+    "numpy<2",
+    "openai-whisper>=20250625",
+    "pydantic>=2.12.4",
+    "regex>=2025.11.3",
+    "soundfile>=0.13.1",
+    "torch",
+    "torchaudio",
+    "zhconv>=1.4.3",
+]
+
+[tool.mypy]
+follow_imports = "normal"
+ignore_missing_imports = true
+show_column_numbers = true
+check_untyped_defs = true
+disallow_untyped_defs = true
+warn_return_any = true
+warn_redundant_casts = true
+disallow_untyped_calls = true
+strict_equality = true
+
+[tool.uv.sources]
+demucs = { git = "https://github.com/facebookresearch/demucs" }
+torch = { index = "pytorch_cu118" }
+torchaudio = { index = "pytorch_cu118" }
+
+
+[[tool.uv.index]]
+name = "cernet"
+url = "https://mirrors.cernet.edu.cn/pypi/web/simple"
+default = true
+
+[[tool.uv.index]]
+name = "pytorch_cu118"
+url = "https://download.pytorch.org/whl/cu118"
+
+[[tool.uv.index]]
+name = "pytorch_cu126"
+url = "https://download.pytorch.org/whl/cu126"
+
+[dependency-groups]
+dev = ["ipykernel>=6.31.0"]
+
+[tool.uv]
+index-strategy = "unsafe-best-match"
+required-environments = [
+    "sys_platform == 'win32' and platform_machine == 'AMD64'",
+]
