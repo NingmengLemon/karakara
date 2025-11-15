@@ -36,6 +36,7 @@ strict_equality = true
 demucs = { git = "https://github.com/facebookresearch/demucs" }
 torch = { index = "pytorch_cu118" }
 torchaudio = { index = "pytorch_cu118" }
+karakara = { workspace = true }
 
 
 [[tool.uv.index]]
@@ -51,9 +52,15 @@ url = "https://download.pytorch.org/whl/cu118"
 name = "pytorch_cu126"
 url = "https://download.pytorch.org/whl/cu126"
 
+[tool.uv.workspace]
+members = [
+    ".",
+]
+
 [dependency-groups]
 dev = [
     "ipykernel>=6.31.0",
+    "karakara",
     "pytest>=8.4.2",
     "pytest-asyncio>=1.2.0",
     "pytest-cov>=7.0.0",

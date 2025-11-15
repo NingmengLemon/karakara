@@ -184,25 +184,21 @@ def _match_instance_type(objs: tuple[object, ...], types: tuple[type, ...]) -> b
     return all([isinstance(o, t) for o, t in zip(objs, types)])
 
 
-def parse_line(line: str) -> BasicLyricLine | None:
-    result = BasicLyricLine()
-
-    line = line.strip()
-    seq: list[str | regex.Match[str]] = split_to_sequence(
-        compile_regex(f"{TIMETAG_REGEX} | {WORD_TIMETAG_REGEX}"),
-        line,
-    )
+def parse_line_seq(seq: list[str | regex.Match[str]]) -> BasicLyricLine | None:
+    # 为空行时返回 None
     if not seq:
         return None
+
+    result = BasicLyricLine()
     if len(seq) == 1:
         obj = seq[0]
         if isinstance(obj, str):
-            result.words.append(LyricWord(content=obj))
+            return BasicLyricLine(words=[LyricWord(content=obj)])
         elif isinstance(obj, regex.Match):
-            result.start = match2ms(obj)
-            result.words.append(LyricWord(content="", start=result.start))
-    if result.words:
-        return result
+            ts = match2ms(obj)
+            return BasicLyricLine(
+                words=[LyricWord(content="", start=result.start)], start=ts
+            )
 
     current_word = LyricWord()
     for idx, obj in enumerate(seq):
@@ -218,9 +214,9 @@ def parse_line(line: str) -> BasicLyricLine | None:
                     (
                         "square-brackets-wrapped by-word time tag found"
                         # ", this may confuse by-word time tag with folded by-line time tag"
-                        ": %s"
+                        ", nearby objs = %s"
                     ),
-                    line,
+                    seq[idx - 1 : idx + 2],
                 )
 
             if idx > 0:
@@ -260,12 +256,10 @@ def parse_line(line: str) -> BasicLyricLine | None:
     for idx, word in enumerate(result.words):
         if not word.content:
             continue
-        if idx > 0:
-            if word.start is None:
-                raise LyricsParserError(
-                    f"unexpected condition, start time of the first word should not be None: {word!r}; full sequence: {seq!r}"
-                )
-
+        if idx > 0 and word.start is None:
+            raise LyricsParserError(
+                f"unexpected condition, start time of the first word should not be None: {word!r}; full sequence: {seq!r}"
+            )
         if idx < len(result.words) - 1 and word.end is None:
             raise LyricsParserError(
                 f"unexpected condition, end time of the last word should not be None: {word!r}; full sequence: {seq!r}"
@@ -293,8 +287,34 @@ def parse_line(line: str) -> BasicLyricLine | None:
     return result
 
 
-def parse_lrc(lrc: str):
-    raw_lines = lrc.splitlines()
+def parse_file(lrc: str):
+    lines: list[LyricLine] = []
+    current: LyricLine | None = None
+    for raw_line in lrc.strip().splitlines():
+        seq = split_to_sequence(
+            compile_regex(f"{TIMETAG_REGEX} | {WORD_TIMETAG_REGEX}"),
+            raw_line.strip(),
+        )
+        line = parse_line_seq(seq)
 
-    for raw_line in raw_lines:
-        pass
+        if line is None:
+            if current:
+                lines.append(current)
+            current = None
+        if line:
+            if current is None:
+                current = LyricLine.model_validate(line.model_dump())
+                if current.end is None and line.start is not None:
+                    current.end = line.start
+                elif line.start is None and current.end is not None:
+                    line.start = current.end
+            else:
+                current.reference_lines.append(line)
+
+    if current is not None:
+        lines.append(current)
+    return Lyrics(lyrics=lines)
+
+
+def construct_lrc(lyrics: Lyrics):
+    pass
