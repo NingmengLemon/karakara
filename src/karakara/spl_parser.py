@@ -139,8 +139,6 @@ class LyricWord(BaseModel):
 
 
 class BasicLyricLine(BaseModel):
-    start: int | None = None  # ms
-    end: int | None = None  # ms
     words: list[LyricWord] = Field(default_factory=list)
 
 
@@ -164,8 +162,10 @@ def split_to_sequence(
     for ma in pattern.finditer(text):
         # 上一个匹配结束到当前匹配开始之间
         # 如果 match.start() > last_index, 说明中间有普通文本
-        if ma.start() > last_index:
-            result.append(text[last_index : ma.start()])
+        # if ma.start() > last_index:
+        # 小巧思: 如果把空文本也算上的话, 那么生成序列就必然是 文本-匹配-文本 的交替出现
+        # 这样后续的状态管理能省很多事
+        result.append(text[last_index : ma.start()])
 
         result.append(ma)
         last_index = ma.end()
@@ -178,14 +178,13 @@ def split_to_sequence(
     return result
 
 
-def _match_instance_type(objs: tuple[object, ...], types: tuple[type, ...]) -> bool:
-    if len(objs) != len(types):
-        return False
-    return all([isinstance(o, t) for o, t in zip(objs, types)])
-
-
-def parse_line_seq(seq: list[str | regex.Match[str]]) -> BasicLyricLine | None:
-    # 为空行时返回 None
+def parse_line(line: str) -> BasicLyricLine | None:
+    # 因为折叠行的特性将在上层预处理, 所以我们可以将行内的所有时间标签一视同仁
+    seq = split_to_sequence(
+        compile_regex(f"{TIMETAG_REGEX} | {WORD_TIMETAG_REGEX}"),
+        line.strip(),
+    )
+    # 为空行时直接返回 None
     if not seq:
         return None
 
@@ -195,19 +194,16 @@ def parse_line_seq(seq: list[str | regex.Match[str]]) -> BasicLyricLine | None:
         if isinstance(obj, str):
             return BasicLyricLine(words=[LyricWord(content=obj)])
         elif isinstance(obj, regex.Match):
-            ts = match2ms(obj)
-            return BasicLyricLine(
-                words=[LyricWord(content="", start=result.start)], start=ts
-            )
+            return BasicLyricLine(words=[LyricWord(content="", start=match2ms(obj))])
 
     current_word = LyricWord()
     for idx, obj in enumerate(seq):
         if isinstance(obj, regex.Match):
             ts = match2ms(obj)
             if idx == len(seq) - 1:
-                result.end = ts
+                pass
             elif idx == 0:
-                result.start = ts
+                pass
             elif obj.group().startswith("["):
                 s, e = obj.span()
                 logger.warning(
@@ -287,7 +283,7 @@ def parse_line_seq(seq: list[str | regex.Match[str]]) -> BasicLyricLine | None:
     return result
 
 
-def parse_file(lrc: str):
+def parse_file(lrc: str) -> Lyrics:
     lines: list[LyricLine] = []
     current: LyricLine | None = None
     for raw_line in lrc.strip().splitlines():
@@ -295,7 +291,7 @@ def parse_file(lrc: str):
             compile_regex(f"{TIMETAG_REGEX} | {WORD_TIMETAG_REGEX}"),
             raw_line.strip(),
         )
-        line = parse_line_seq(seq)
+        line = parse_line(seq)
 
         if line is None:
             if current:
@@ -304,16 +300,13 @@ def parse_file(lrc: str):
         if line:
             if current is None:
                 current = LyricLine.model_validate(line.model_dump())
-                if current.end is None and line.start is not None:
-                    current.end = line.start
-                elif line.start is None and current.end is not None:
-                    line.start = current.end
             else:
                 current.reference_lines.append(line)
 
     if current is not None:
         lines.append(current)
-    return Lyrics(lyrics=lines)
+
+    raise NotImplementedError
 
 
 def construct_lrc(lyrics: Lyrics):

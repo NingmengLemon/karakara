@@ -6,11 +6,11 @@ from karakara.spl_parser import (
     LyricWord,
     split_to_sequence,
 )
-from karakara.spl_parser import parse_line_seq as parse_line_seq
+from karakara.spl_parser import parse_line as parse_line
 
 
 def parse_line(line: str):
-    return parse_line_seq(
+    return parse_line(
         split_to_sequence(f"{TIMETAG_REGEX} | {WORD_TIMETAG_REGEX}", line.strip())
     )
 
