@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from enum import Enum, auto
 from logging import getLogger
+from typing import Any
 
 import regex
 from pydantic import BaseModel, Field
+from typing_extensions import TypeAlias, TypeIs
 
 logger = getLogger()
 
@@ -15,25 +17,6 @@ def compile_regex(r: str):
     if r not in _REGEX_PATTERN_CACHE:
         _REGEX_PATTERN_CACHE[r] = regex.compile(r, flags=regex.VERBOSE | regex.UNICODE)
     return _REGEX_PATTERN_CACHE[r]
-
-
-class Counter:
-    def __init__(self) -> None:
-        self._n = 0
-
-    @property
-    def value(self):
-        return self._n
-
-    def increase(self):
-        self._n += 1
-        return self._n
-
-    def __next__(self):
-        return self.increase()
-
-    def __iter__(self):
-        return self
 
 
 compile_regex(
@@ -82,6 +65,7 @@ compile_regex(
     \]
 """
 )
+compile_regex(GENERIC_TIMETAG_REGEX := f"{TIMETAG_REGEX} | {WORD_TIMETAG_REGEX}")
 
 
 class LyricsParserError(Exception):
@@ -123,26 +107,22 @@ class LyricLineType(Enum):
     # ellipsis of start time tag is also ok, but regarded as reference line
     BYWORD = auto()
     # `[00:47.07]如果时间逃走了<00:49.45>还有谁会记得我[00:51.90]`
-    #                       ^^^^^^^^^^ by-word timetag
+    #  ^^^^^^^^^^ by-line   ^^^^^^^^^^ by-word timetag
     # use `[...]` to wrap by-word time tag is okay, but should give warning
     # `<...><...>` is also a valid word, but content is ""
 
 
-_id_counter = Counter()
-
-
 class LyricWord(BaseModel):
-    id: int = Field(default_factory=_id_counter.increase)
     content: str = ""
     start: int | None = None
     end: int | None = None
 
 
-class BasicLyricLine(BaseModel):
-    words: list[LyricWord] = Field(default_factory=list)
+BasicLyricLine: TypeAlias = list[LyricWord]
 
 
-class LyricLine(BasicLyricLine):
+class LyricLine(BaseModel):
+    content: BasicLyricLine = Field(default_factory=list)
     reference_lines: list[BasicLyricLine] = Field(default_factory=list)
 
 
@@ -172,126 +152,83 @@ def split_to_sequence(
 
     # 处理最后一个匹配项到字符串末尾
     # 如果 last_index 小于字符串总长度, 说明末尾还有文本
-    if last_index < len(text):
-        result.append(text[last_index:])
+    # if last_index < len(text):
+    result.append(text[last_index:])
+    # 不做判定, 这样一来序列的首尾都会是字符串
 
     return result
 
 
-def parse_line(line: str) -> BasicLyricLine | None:
+def parse_line(line: str) -> BasicLyricLine:
     # 因为折叠行的特性将在上层预处理, 所以我们可以将行内的所有时间标签一视同仁
     seq = split_to_sequence(
-        compile_regex(f"{TIMETAG_REGEX} | {WORD_TIMETAG_REGEX}"),
-        line.strip(),
+        GENERIC_TIMETAG_REGEX,
+        line,
     )
-    # 为空行时直接返回 None
     if not seq:
-        return None
+        return []
 
-    result = BasicLyricLine()
+    if len(seq) % 2 != 1:
+        raise LyricsParserError(
+            f"未预料的情况: 匹配序列的长度预期为奇数, 而不是: {len(seq)}"
+        )
+    # 一些特殊情况
     if len(seq) == 1:
-        obj = seq[0]
-        if isinstance(obj, str):
-            return BasicLyricLine(words=[LyricWord(content=obj)])
-        elif isinstance(obj, regex.Match):
-            return BasicLyricLine(words=[LyricWord(content="", start=match2ms(obj))])
-
-    current_word = LyricWord()
-    for idx, obj in enumerate(seq):
-        if isinstance(obj, regex.Match):
-            ts = match2ms(obj)
-            if idx == len(seq) - 1:
-                pass
-            elif idx == 0:
-                pass
-            elif obj.group().startswith("["):
-                s, e = obj.span()
-                logger.warning(
-                    (
-                        "square-brackets-wrapped by-word time tag found"
-                        # ", this may confuse by-word time tag with folded by-line time tag"
-                        ", nearby objs = %s"
-                    ),
-                    seq[idx - 1 : idx + 2],
-                )
-
-            if idx > 0:
-                # 总之是一个 word 结束了
-                last_obj = seq[idx - 1]
-                if isinstance(last_obj, str):
-                    # `还有谁会记得我 [00:51.90]`
-                    current_word.content = last_obj
-                    current_word.end = ts
-                elif isinstance(last_obj, regex.Match):
-                    # `<00:49.45> <00:50.00>`
-                    current_word.content = ""
-                    current_word.start = match2ms(last_obj)
-                    current_word.end = ts
-                result.words.append(current_word)
-                current_word = LyricWord()
-        elif isinstance(obj, str):
-            if idx > 0:
-                last_obj = seq[idx - 1]
-                if isinstance(last_obj, str):
-                    # `如果时间逃走了 还有谁会记得我`
-                    # 如果中间没有标签的话这俩不可能被切开
-                    # 那么就是出错了
-                    raise InvalidLyricsError(
-                        f"unexpected condition, sequence = {seq!r}"
-                    )
-                elif isinstance(last_obj, regex.Match):
-                    # `<00:49.45> 还有谁会记得我`
-                    # 一个 word 开始了
-                    current_word.start = match2ms(last_obj)
-                    current_word.content = obj
-    if current_word.content:
-        result.words.append(current_word)
-
-    # 检查时间顺序
-    words: list[LyricWord] = []
-    for idx, word in enumerate(result.words):
-        if not word.content:
-            continue
-        if idx > 0 and word.start is None:
+        if not is_str(seq[0]):
             raise LyricsParserError(
-                f"unexpected condition, start time of the first word should not be None: {word!r}; full sequence: {seq!r}"
+                f"未预料的情况: 匹配序列长度为 1 时, 其中的唯一元素的类型预期为 str, 而不是 {type(seq[0])!r}"
             )
-        if idx < len(result.words) - 1 and word.end is None:
-            raise LyricsParserError(
-                f"unexpected condition, end time of the last word should not be None: {word!r}; full sequence: {seq!r}"
-            )
-        if words:
-            last_word = words[-1]
-            if not (
-                (last_word.start or float("-inf"))
-                < (last_word.end or 0)
-                <= (word.start or 0)
-                < (word.end or float("+inf"))
-            ):
-                last_word.end = max(
-                    [
-                        o
-                        for o in [last_word.start, last_word.end, word.start, word.end]
-                        if o is not None
-                    ],
-                )
-                last_word.content += word.content
-                continue
-        words.append(word)
-    result.words = words
+        return [LyricWord(content=seq[0])]
 
+    result: BasicLyricLine = []
+    for idx in range(0, len(seq), 2):
+        text = seq[idx]
+        if not is_str(text):
+            raise LyricsParserError(
+                f"未预料的情况: 匹配序列在 [{idx}] 处的元素的类型预期为 str, 而不是 {type(text)}"
+            )
+        word = LyricWord(content=text)
+        if idx > 0:
+            if not is_match((t := seq[idx - 1])):
+                raise LyricsParserError(
+                    f"未预料的情况: 匹配序列在 [{idx - 1}] 处的元素的类型预期为 Match, 而不是 {type(text)}"
+                )
+            word.start = match2ms(t)
+        if idx < len(seq) - 1:
+            if not is_match((t := seq[idx + 1])):
+                raise LyricsParserError(
+                    f"未预料的情况: 匹配序列在 [{idx + 1}] 处的元素的类型预期为 Match, 而不是 {type(text)}"
+                )
+            word.end = match2ms(t)
+        result.append(word)
+
+    if len(result) < 2:
+        raise LyricsParserError(
+            f"未预料的情况: 预处理结果序列的预期长度 >= 2, 而不是 {len(result)}"
+        )
+
+    # pop 掉空的首尾, 这样 [0] 的 start 就是整行的 start, [-1] 同理
+    if not result[0].content:
+        result.pop(0)
+    if not result[-1].content and len(result) > 1:
+        result.pop(-1)
     return result
+
+
+def is_match(obj: Any) -> TypeIs[regex.Match]:
+    return isinstance(obj, regex.Match)
+
+
+def is_str(obj: Any) -> TypeIs[str]:
+    return isinstance(obj, str)
 
 
 def parse_file(lrc: str) -> Lyrics:
     lines: list[LyricLine] = []
     current: LyricLine | None = None
     for raw_line in lrc.strip().splitlines():
-        seq = split_to_sequence(
-            compile_regex(f"{TIMETAG_REGEX} | {WORD_TIMETAG_REGEX}"),
-            raw_line.strip(),
-        )
-        line = parse_line(seq)
+        line_str = raw_line.strip()
+        line = parse_line(line_str)
 
         if line is None:
             if current:
@@ -299,7 +236,7 @@ def parse_file(lrc: str) -> Lyrics:
             current = None
         if line:
             if current is None:
-                current = LyricLine.model_validate(line.model_dump())
+                current = LyricLine(content=line)
             else:
                 current.reference_lines.append(line)
 
