@@ -172,34 +172,59 @@ def parse_line(line: str) -> BasicLyricLine:
         raise LyricsParserError(
             f"未预料的情况: 匹配序列的长度预期为奇数, 而不是: {len(seq)}"
         )
-    # 一些特殊情况
-    if len(seq) == 1:
-        if not is_str(seq[0]):
+
+    # 总之先 unzip 成两个序列, 然后就会变成这样:
+    # text_seq: [0] [1] [2] [3] [4]
+    #            | / | / | / | /
+    # time_seq: [0] [1] [2] [3]
+    text_seq: list[str] = []
+    time_seq: list[int] = []
+    for idx in range(len((seq))):
+        if is_match(m := seq[idx]):
+            time_seq.append(match2ms(m))
+        elif is_str(s := seq[idx]):
+            text_seq.append(s)
+        else:
             raise LyricsParserError(
-                f"未预料的情况: 匹配序列长度为 1 时, 其中的唯一元素的类型预期为 str, 而不是 {type(seq[0])!r}"
+                f"未预料的情况: 匹配序列中的元素的类型预期为 str 或 Match, 而不是 {type(seq[idx])}"
             )
-        return [LyricWord(content=seq[0])]
+
+    # 特殊情况
+    if len(text_seq) == 1:
+        if time_seq:
+            raise LyricsParserError(
+                f"未预料的情况: 匹配序列长度为 1 时, 其中的唯一元素的类型预期为 str, 而不是 {type(seq[0])}"
+            )
+        return [LyricWord(content=text_seq[0])]
+
+    if (d := (len(text_seq) - len(time_seq))) != 1:
+        raise LyricsParserError(
+            f"未预料的情况: 文本序列的长度 减去 时间序列的长度 的值预期为 1, 而不是 {d}"
+        )
+
+    offset = 0
+    for idx in range(0, len(time_seq)):
+        idx -= offset
+        if idx > 0:
+            now_time = time_seq[idx]
+            prev_time = time_seq[idx - 1]
+            if not (prev_time < now_time):
+                logger.warning(
+                    f"unordered time tag found: [prev={prev_time}, now={now_time}]"
+                )
+                text_seq[idx] += text_seq[idx + 1]
+                text_seq.pop(idx + 1)
+                time_seq.pop(idx)
+                offset += 1
 
     result: BasicLyricLine = []
-    for idx in range(0, len(seq), 2):
-        text = seq[idx]
-        if not is_str(text):
-            raise LyricsParserError(
-                f"未预料的情况: 匹配序列在 [{idx}] 处的元素的类型预期为 str, 而不是 {type(text)}"
-            )
-        word = LyricWord(content=text)
-        if idx > 0:
-            if not is_match((t := seq[idx - 1])):
-                raise LyricsParserError(
-                    f"未预料的情况: 匹配序列在 [{idx - 1}] 处的元素的类型预期为 Match, 而不是 {type(text)}"
-                )
-            word.start = match2ms(t)
-        if idx < len(seq) - 1:
-            if not is_match((t := seq[idx + 1])):
-                raise LyricsParserError(
-                    f"未预料的情况: 匹配序列在 [{idx + 1}] 处的元素的类型预期为 Match, 而不是 {type(text)}"
-                )
-            word.end = match2ms(t)
+    for idx in range(0, len(text_seq)):
+        word = LyricWord(content=text_seq[idx])
+        if 0 < idx <= len(text_seq) - 1:
+            word.start = time_seq[idx - 1]
+        if 0 <= idx < len(text_seq) - 1:
+            word.end = time_seq[idx]
+
         result.append(word)
 
     if len(result) < 2:
@@ -212,6 +237,7 @@ def parse_line(line: str) -> BasicLyricLine:
         result.pop(0)
     if not result[-1].content and len(result) > 1:
         result.pop(-1)
+
     return result
 
 
