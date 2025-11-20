@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from enum import Enum, auto
+from io import StringIO
 from logging import getLogger
 from typing import Any
 
@@ -20,49 +21,73 @@ def compile_regex(r: str):
 
 
 compile_regex(
-    TIMETAG_REGEX := r"""    
-    \[
-        \s*
-            (?P<min>\d{1,4})  
-        \s*       
-        :  
-        \s*
-            (?P<sec>\d{1,2})   
-        \s*
-        (?:
-            [:\.]
+    TIMETAG_REGEX := r"""
+    (?:
+        \[
             \s*
-                (?P<tail>\d{1,6}) 
+                (?P<min>\d{1,4})  
+            \s*       
+            :  
             \s*
-        )?
-    \]
+                (?P<sec>\d{1,2})   
+            \s*
+            (?:
+                [:\.]
+                \s*
+                    (?P<tail>\d{1,6}) 
+                \s*
+            )?
+        \]
+    )
 """
 )
 compile_regex(
-    WORD_TIMETAG_REGEX := TIMETAG_REGEX.replace(r"\[", r"\<").replace(r"\]", r"\>")
+    WORD_TIMETAG_REGEX := r"""
+    (?:
+        \<
+            \s*
+                (?P<min>\d{1,4})  
+            \s*       
+            :  
+            \s*
+                (?P<sec>\d{1,2})   
+            \s*
+            (?:
+                [:\.]
+                \s*
+                    (?P<tail>\d{1,6}) 
+                \s*
+            )?
+        \>
+    )
+"""
 )
 compile_regex(
     TIMETAG_REGEX_STRICT := r"""
-    \[
-        (?P<min>\d{1,4})
-        :
-        (?P<sec>\d{1,2})
-        \.
-        (?P<tail>\d{1,3})
-    \]
+    (?:
+        \[
+            (?P<min>\d{1,4})
+            :
+            (?P<sec>\d{1,2})
+            \.
+            (?P<tail>\d{1,3})
+        \]
+    )
 """
 )
 compile_regex(
     METATAG_REGEX := r"""
-    \[
-        \s*
-        (?P<key>[a-zA-Z]{2,5})
-        \s*
-        :
-        \s*
-        (?P<value>.+?)
-        \s*
-    \]
+    (?:
+        \[
+            \s*
+            (?P<key>[a-zA-Z]{2,5})
+            \s*
+            :
+            \s*
+            (?P<value>.+?)
+            \s*
+        \]
+    )
 """
 )
 compile_regex(GENERIC_TIMETAG_REGEX := f"{TIMETAG_REGEX} | {WORD_TIMETAG_REGEX}")
@@ -122,12 +147,14 @@ BasicLyricLine: TypeAlias = list[LyricWord]
 
 
 class LyricLine(BaseModel):
+    start: int | None = None
+    end: int | None = None
     content: BasicLyricLine = Field(default_factory=list)
     reference_lines: list[BasicLyricLine] = Field(default_factory=list)
 
 
 class Lyrics(BaseModel):
-    lyrics: list[LyricLine] = Field(default_factory=list)
+    lines: list[LyricLine] = Field(default_factory=list)
     metadata: dict[str, str] = Field(default_factory=dict)
 
 
@@ -159,14 +186,16 @@ def split_to_sequence(
     return result
 
 
-def parse_line(line: str) -> BasicLyricLine:
+def parse_line(line: str) -> BasicLyricLine | None:
     # 因为折叠行的特性将在上层预处理, 所以我们可以将行内的所有时间标签一视同仁
+    if not line.strip():
+        return None
     seq = split_to_sequence(
         GENERIC_TIMETAG_REGEX,
         line,
     )
-    if not seq:
-        return []
+    if not seq or (len(seq) == 1 and not seq[0]):
+        return None
 
     if len(seq) % 2 != 1:
         raise LyricsParserError(
@@ -249,28 +278,99 @@ def is_str(obj: Any) -> TypeIs[str]:
     return isinstance(obj, str)
 
 
+def split_line_timetags(raw_line: str) -> tuple[list[regex.Match[str]], str]:
+    matches = []
+    m = compile_regex(f"^{TIMETAG_REGEX}").match(raw_line)
+    while m is not None:
+        matches.append(m)
+        raw_line = raw_line.removeprefix(m.group())
+        m = compile_regex(f"^{TIMETAG_REGEX}").match(raw_line)
+    return matches, raw_line
+
+
+def validate_wordseq_order(seq: BasicLyricLine) -> bool:
+    last_word = None
+    for w in seq:
+        if last_word is not None:
+            if (
+                (float("+inf") if last_word.end is None else last_word.end)
+                > (float("-inf") if w.start is None else w.start)
+            ) or (
+                (float("+inf") if w.start is None else w.start)
+                > (float("-inf") if w.end is None else w.end)
+            ):
+                return False
+        last_word = w
+    return True
+
+
+def extract_metadata(s: str) -> dict[str, str]:
+    matches = [m.groupdict() for m in compile_regex(METATAG_REGEX).scanner(s)]
+    return {m["key"]: m["value"] for m in matches}
+
+
 def parse_file(lrc: str) -> Lyrics:
-    lines: list[LyricLine] = []
-    current: LyricLine | None = None
+    metadata = {}
+    line_pool: dict[int, LyricLine] = {}
+    last_tag: int | None = None
     for raw_line in lrc.strip().splitlines():
         line_str = raw_line.strip()
+
+        if m := extract_metadata(line_str):
+            metadata.update(m)
+            logger.debug("metadata line, skip parsing lyrics")
+            continue
+
+        _, line_str = split_line_timetags(line_str)
+        time_tags = [match2ms(m) for m in _]
         line = parse_line(line_str)
+        if not line:
+            last_tag = None
+            logger.debug("遇到空行, 已重置参照行状态")
+            continue
+        if not time_tags:
+            if last_tag is None:
+                logger.warning(f"孤立的歌词行: {line!r} (raw={raw_line!r})")
+                continue
+            logger.debug(f"添加 {line!r} 作为 {line_pool[last_tag]!r} 的参照行")
+            line_pool[last_tag].reference_lines.append(line)
+            continue
 
-        if line is None:
-            if current:
-                lines.append(current)
-            current = None
-        if line:
-            if current is None:
-                current = LyricLine(content=line)
+        word_start = line[0].start
+        for tag in time_tags:
+            if word_start is not None and word_start < tag:
+                logger.warning(
+                    f"无效的重复行时间标签: {tag}ms, 因为它开始于首字开始 ({word_start}ms) 之前"
+                )
+                continue
+            if tag in line_pool:
+                line_pool[tag].reference_lines.append(line)
             else:
-                current.reference_lines.append(line)
+                line_pool[tag] = LyricLine(content=line)
+        if len(time_tags) == 1:
+            # 当被参照的行是重复行时, 参照行无效
+            last_tag = time_tags[0]
 
-    if current is not None:
-        lines.append(current)
+    lyrics = Lyrics(metadata=metadata)
+    for start, line in sorted(list(line_pool.items()), key=lambda o: o[0]):
+        line.start = start
+        if ((lw := line.content[-1]).end) is not None:
+            line.end, lw.end = lw.end, None
+        lyrics.lines.append(line)
 
-    raise NotImplementedError
+    return lyrics
 
 
 def construct_lrc(lyrics: Lyrics):
-    pass
+    buffer = StringIO()
+
+    # metadata
+    for mk, mv in lyrics.metadata.items():
+        buffer.write(f"[{mk}: {mv}]\n")
+
+    for line in lyrics.lines:
+        buffer.write("\n")
+        line_start = line.start
+        if line_start is None:
+            for refline in line.reference_lines:
+                pass
