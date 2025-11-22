@@ -361,18 +361,32 @@ def parse_file(lrc: str) -> Lyrics:
     sorted_lines = sorted(list(line_pool.items()), key=lambda o: o[0])
     for idx, (start, line) in enumerate(sorted_lines):
         line.start = start
-        if line.content[0].start is None:
-            line.content[0].start = start
         if (lw := line.content[-1]).end is not None:
             line.end = lw.end
-        if line.end is None and idx + 1 < len(sorted_lines):
-            # 隐式结尾：持续到下一行开始
-            line.end = sorted_lines[idx + 1][0]
-        if lw.end is None:
-            lw.end = line.end
+
+        # 或许应该加个开关...?
+
+        # optional feature: 填充隐式结尾
+        # if line.end is None and idx + 1 < len(sorted_lines):
+        #     # 隐式结尾：持续到下一行开始
+        #     line.end = sorted_lines[idx + 1][0]
+
+        # optional feature: 填充首字起始和末字结束
+        # if (fw := line.content[0]).start is None:
+        #     fw.start = start
+        # if lw.end is None:
+        #     lw.end = line.end
+
         lyrics.lines.append(line)
 
     return lyrics
+
+
+def ms_to_tag(ms: int) -> str:
+    minutes = ms // 60000
+    seconds = (ms % 60000) // 1000
+    milliseconds = ms % 1000
+    return f"[{minutes:02d}:{seconds:02d}.{milliseconds:03d}]"
 
 
 def construct_lrc(lyrics: Lyrics) -> str:
