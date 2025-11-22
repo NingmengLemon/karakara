@@ -1,0 +1,350 @@
+{
+    "lines": [
+        {
+            "start": 0,
+            "end": 5500,
+            "content": [
+                {
+                    "content": "",
+                    "start": 0,
+                    "end": 5500
+                }
+            ],
+            "reference_lines": []
+        },
+        {
+            "start": 5500,
+            "end": 8500,
+            "content": [
+                {
+                    "content": "这是第一句测试歌词",
+                    "start": 5500,
+                    "end": 8500
+                }
+            ],
+            "reference_lines": []
+        },
+        {
+            "start": 8500,
+            "end": 10500,
+            "content": [
+                {
+                    "content": "带显式结尾的歌词",
+                    "start": 8500,
+                    "end": 10500
+                }
+            ],
+            "reference_lines": []
+        },
+        {
+            "start": 10500,
+            "end": 15000,
+            "content": [
+                {
+                    "content": "隐式结尾会持续到下一行",
+                    "start": 10500,
+                    "end": 15000
+                }
+            ],
+            "reference_lines": []
+        },
+        {
+            "start": 15000,
+            "end": 21000,
+            "content": [
+                {
+                    "content": "这是",
+                    "start": 15000,
+                    "end": 16500
+                },
+                {
+                    "content": "逐字",
+                    "start": 16500,
+                    "end": 18000
+                },
+                {
+                    "content": "标记",
+                    "start": 18000,
+                    "end": 19500
+                },
+                {
+                    "content": "的歌词",
+                    "start": 19500,
+                    "end": 21000
+                }
+            ],
+            "reference_lines": []
+        },
+        {
+            "start": 21000,
+            "end": 26500,
+            "content": [
+                {
+                    "content": "开头",
+                    "start": 21000,
+                    "end": 22000
+                },
+                {
+                    "content": "延迟",
+                    "start": 22000,
+                    "end": 23500
+                },
+                {
+                    "content": "的逐字",
+                    "start": 23500,
+                    "end": 25000
+                },
+                {
+                    "content": "标记",
+                    "start": 25000,
+                    "end": 26500
+                }
+            ],
+            "reference_lines": []
+        },
+        {
+            "start": 30000,
+            "end": 32000,
+            "content": [
+                {
+                    "content": "这句歌词会重复出现两次",
+                    "start": 30000,
+                    "end": 32000
+                }
+            ],
+            "reference_lines": []
+        },
+        {
+            "start": 32000,
+            "end": 35000,
+            "content": [
+                {
+                    "content": "紧跟的参照行不需要时间标签",
+                    "start": 32000,
+                    "end": 35000
+                }
+            ],
+            "reference_lines": [
+                [
+                    {
+                        "content": "Translation line without timestamp",
+                        "start": null,
+                        "end": null
+                    }
+                ]
+            ]
+        },
+        {
+            "start": 35000,
+            "end": 40000,
+            "content": [
+                {
+                    "content": "主歌词文本",
+                    "start": 35000,
+                    "end": 40000
+                }
+            ],
+            "reference_lines": [
+                [
+                    {
+                        "content": "第一行翻译",
+                        "start": null,
+                        "end": null
+                    }
+                ],
+                [
+                    {
+                        "content": "第二行翻译",
+                        "start": null,
+                        "end": null
+                    }
+                ]
+            ]
+        },
+        {
+            "start": 40000,
+            "end": 43000,
+            "content": [
+                {
+                    "content": "测",
+                    "start": 40000,
+                    "end": 40500
+                },
+                {
+                    "content": "试",
+                    "start": 40500,
+                    "end": 41000
+                },
+                {
+                    "content": "混",
+                    "start": 41000,
+                    "end": 41500
+                },
+                {
+                    "content": "合",
+                    "start": 41500,
+                    "end": 42000
+                },
+                {
+                    "content": "标",
+                    "start": 42000,
+                    "end": 42500
+                },
+                {
+                    "content": "记",
+                    "start": 42500,
+                    "end": 43000
+                }
+            ],
+            "reference_lines": [
+                [
+                    {
+                        "content": "First translation",
+                        "start": null,
+                        "end": null
+                    }
+                ],
+                [
+                    {
+                        "content": "Second translation",
+                        "start": null,
+                        "end": null
+                    }
+                ]
+            ]
+        },
+        {
+            "start": 45000,
+            "end": 50000,
+            "content": [
+                {
+                    "content": "这句歌词会重复出现两次",
+                    "start": 45000,
+                    "end": 50000
+                }
+            ],
+            "reference_lines": []
+        },
+        {
+            "start": 50000,
+            "end": 51500,
+            "content": [
+                {
+                    "content": "测试毫秒格式",
+                    "start": 50000,
+                    "end": 51500
+                }
+            ],
+            "reference_lines": []
+        },
+        {
+            "start": 52120,
+            "end": 53100,
+            "content": [
+                {
+                    "content": "两位毫秒",
+                    "start": 52120,
+                    "end": 53100
+                }
+            ],
+            "reference_lines": []
+        },
+        {
+            "start": 54123,
+            "end": 55120,
+            "content": [
+                {
+                    "content": "三位毫秒",
+                    "start": 54123,
+                    "end": 55120
+                }
+            ],
+            "reference_lines": []
+        },
+        {
+            "start": 60000,
+            "end": 63000,
+            "content": [
+                {
+                    "content": "测试",
+                    "start": 60000,
+                    "end": 61000
+                },
+                {
+                    "content": "时间",
+                    "start": 61000,
+                    "end": 62000
+                },
+                {
+                    "content": "递增",
+                    "start": 62000,
+                    "end": 63000
+                }
+            ],
+            "reference_lines": []
+        },
+        {
+            "start": 65000,
+            "end": 66100,
+            "content": [
+                {
+                    "content": "六位毫秒测试",
+                    "start": 65000,
+                    "end": 66100
+                }
+            ],
+            "reference_lines": []
+        },
+        {
+            "start": 70500,
+            "end": 75000,
+            "content": [
+                {
+                    "content": "含有空格的    歌词文本",
+                    "start": 70500,
+                    "end": 75000
+                }
+            ],
+            "reference_lines": []
+        },
+        {
+            "start": 75000,
+            "end": 80000,
+            "content": [
+                {
+                    "content": "",
+                    "start": 75000,
+                    "end": 80000
+                }
+            ],
+            "reference_lines": []
+        },
+        {
+            "start": 80000,
+            "end": null,
+            "content": [
+                {
+                    "content": "最后一句歌词",
+                    "start": 80000,
+                    "end": null
+                }
+            ],
+            "reference_lines": [
+                [
+                    {
+                        "content": "End of test lyrics",
+                        "start": null,
+                        "end": null
+                    }
+                ]
+            ]
+        }
+    ],
+    "metadata": {
+        "ti": "测试歌曲",
+        "ar": "测试歌手",
+        "al": "测试专辑",
+        "by": "椒盐音乐",
+        "offset": "0"
+    }
+}

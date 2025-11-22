@@ -1,6 +1,5 @@
 import os
 from pathlib import Path
-from typing import Dict, Tuple
 
 import av
 import av.error
@@ -21,16 +20,12 @@ sep = demucs.api.Separator(
     # segment=44,
 )
 separate_tensor = sep.separate_tensor
-# --------------------------------------------------------------------------
-# 步骤 1: 这是您提供的函数签名，我们在此基础上实现一个模拟版本用于演示
-# 在实际使用中，您应该替换成您真正的模型函数。
-# --------------------------------------------------------------------------
 
 
 # --------------------------------------------------------------------------
 # 步骤 2: 将任意音频文件转换为函数所需的 Tensor
 # --------------------------------------------------------------------------
-def load_audio_to_tensor(file_path: str) -> Tuple[Tensor, int]:
+def load_audio_to_tensor(file_path: str) -> tuple[Tensor, int]:
     """
     使用 PyAV 加载音频文件并转换为torch.Tensor。
 
@@ -65,7 +60,7 @@ def load_audio_to_tensor(file_path: str) -> Tuple[Tensor, int]:
     # 确保数据类型为 float32
     # PyAV 可能返回 int16, int32, float32, float64 等
     if waveform_np.dtype != np.float32:
-        # 如果是整数类型，需要归一化到 [-1.0, 1.0]
+        # 如果是整数类型, 需要归一化到 [-1.0, 1.0]
         if np.issubdtype(waveform_np.dtype, np.integer):
             max_val = np.iinfo(waveform_np.dtype).max
             waveform_np = waveform_np.astype(np.float32) / max_val
@@ -83,7 +78,7 @@ def load_audio_to_tensor(file_path: str) -> Tuple[Tensor, int]:
 # 步骤 3: 将分离出的音轨 Tensor 保存为 WAV 文件
 # --------------------------------------------------------------------------
 def save_tensors_to_wav(
-    stems: Dict[str, Tensor], sample_rate: int, output_dir: str, original_filename: str
+    stems: dict[str, Tensor], sample_rate: int, output_dir: str, original_filename: str
 ):
     """
     使用 PyAV 将音轨字典中的每个 Tensor 保存为 WAV 文件。
@@ -100,7 +95,7 @@ def save_tensors_to_wav(
         stem_tensor = stem_tensor.cpu().contiguous()
 
         # 将 float32 Tensor 转换回 int16 (WAV 文件常用格式)
-        # 1.裁剪到 [-1.0, 1.0] 范围，防止溢出
+        # 1.裁剪到 [-1.0, 1.0] 范围, 防止溢出
         stem_tensor = torch.clamp(stem_tensor, -1.0, 1.0)
         # 2.乘以 int16 的最大值并转换类型
         stem_np_int16 = (stem_tensor.numpy() * 32767).astype(np.int16)
@@ -133,9 +128,9 @@ def save_tensors_to_wav(
 
 def main():
     # --- 准备一个用于测试的音频文件 ---
-    # 如果你已经有一个音频文件，比如 "my_song.mp3"，可以直接使用它。
+    # 如果你已经有一个音频文件, 比如 "my_song.mp3", 可以直接使用它。
 
-    INPUT_FILE = "samples/countdown_to_zero_luotianyi.mp3"  # 你可以改成你的文件名，如 'song.flac', 'voice.ogg' 等
+    INPUT_FILE = "samples/countdown_to_zero_luotianyi.mp3"  # 你可以改成你的文件名, 如 'song.flac', 'voice.ogg' 等
     OUTPUT_DIR = "tmp/"
 
     if not os.path.exists(INPUT_FILE):
@@ -153,7 +148,7 @@ def main():
 
     # 2. 调用音轨分离函数
     print("\n[步骤 2/3] 正在调用音轨分离函数...")
-    # 假设模型返回的音轨采样率与模型内部采样率一致，我们用 44100
+    # 假设模型返回的音轨采样率与模型内部采样率一致, 我们用 44100
     _, separated_stems = separate_tensor(wav=input_wav, sr=input_sr)
     MODEL_INTERNAL_SR = sep.samplerate  # 假设我们知道模型输出是这个采样率
 
