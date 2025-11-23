@@ -168,6 +168,40 @@ class Lyrics(BaseModel):
     lines: list[LyricLine] = Field(default_factory=list)
     metadata: dict[str, str] = Field(default_factory=dict)
 
+    def __add__(self, other: Lyrics) -> Lyrics:
+        return self.combine(other)
+
+    def combine(self, other: Lyrics, other_as_reference_only: bool = True) -> Lyrics:
+        new = Lyrics()
+        new.metadata.update(self.metadata)
+        new.metadata.update(other.metadata)
+
+        pool: dict[int, LyricLine] = {}
+        for line in self.lines:
+            if line.start is None:
+                continue
+            pool[line.start] = line
+        for line in other.lines:
+            if line.start is None:
+                continue
+            if line.start in pool:
+                pool[line.start].reference_lines.append(line.content)
+                pool[line.start].reference_lines.extend(line.reference_lines)
+            elif not other_as_reference_only:
+                pool[line.start] = line
+        new.lines = [v.model_copy(deep=True) for v in pool.values()]
+        return new
+
+    @classmethod
+    def loads(cls, lrc: str) -> Lyrics:
+        return parse_file(lrc)
+
+    def dumps(self, with_metadata: bool = True) -> str:
+        return construct_lrc(self, with_metadata=with_metadata)
+
+    def __str__(self) -> str:
+        return self.dumps()
+
 
 def split_to_sequence(
     pattern: str | regex.Pattern[str], text: str
@@ -405,12 +439,12 @@ def construct_line(line: BasicLyricLine) -> str:
     return result
 
 
-def construct_lrc(lyrics: Lyrics) -> str:
+def construct_lrc(lyrics: Lyrics, with_metadata: bool = True) -> str:
     buffer = StringIO()
 
-    # metadata
-    for mk, mv in lyrics.metadata.items():
-        buffer.write(f"[{mk}: {mv}]\n")
+    if with_metadata:
+        for mk, mv in lyrics.metadata.items():
+            buffer.write(f"[{mk}: {mv}]\n")
 
     for line in lyrics.lines:
         buffer.write("\n")
