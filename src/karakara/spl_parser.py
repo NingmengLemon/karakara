@@ -362,7 +362,7 @@ def parse_file(lrc: str) -> Lyrics:
     for idx, (start, line) in enumerate(sorted_lines):
         line.start = start
         if (lw := line.content[-1]).end is not None:
-            line.end = lw.end
+            line.end, lw.end = lw.end, None
 
         # 或许应该加个开关...?
 
@@ -382,11 +382,27 @@ def parse_file(lrc: str) -> Lyrics:
     return lyrics
 
 
-def ms_to_tag(ms: int) -> str:
-    minutes = ms // 60000
-    seconds = (ms % 60000) // 1000
-    milliseconds = ms % 1000
-    return f"[{minutes:02d}:{seconds:02d}.{milliseconds:03d}]"
+def ms_to_tag(ms: int, byword: bool = False) -> str:
+    mi = ms // 60000
+    sec = (ms % 60000) // 1000
+    ms = ms % 1000
+    return (
+        f"<{mi:02d}:{sec:02d}.{ms:03d}>" if byword else f"[{mi:02d}:{sec:02d}.{ms:03d}]"
+    )
+
+
+def construct_line(line: BasicLyricLine) -> str:
+    result = ""
+    for idx, word in enumerate(line):
+        prefix = ""
+        suffix = "" if word.end is None else ms_to_tag(word.end, byword=True)
+        if word.start is not None and (
+            (idx > 0 and line[idx - 1].end != word.start) or idx == 0
+        ):
+            prefix = ms_to_tag(word.start, byword=True)
+        result += f"{prefix}{word.content}{suffix}"
+
+    return result
 
 
 def construct_lrc(lyrics: Lyrics) -> str:
@@ -402,6 +418,15 @@ def construct_lrc(lyrics: Lyrics) -> str:
         if line_start is None:
             logger.warning(f"未知的行起始时间: {line}")
             continue
-        line_end = line.end
+        buffer.write(ms_to_tag(line_start))
+        buffer.write(construct_line(line.content))
+        if line.end:
+            buffer.write(ms_to_tag(line.end))
+        buffer.write("\n")
 
-    raise NotImplementedError
+        for refline in line.reference_lines:
+            buffer.write(ms_to_tag(line_start))
+            buffer.write(construct_line(refline))
+            buffer.write("\n")
+
+    return buffer.getvalue()
