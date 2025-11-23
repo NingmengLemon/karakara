@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from enum import Enum, auto
 from io import StringIO
 from logging import getLogger
 from typing import Any
@@ -122,26 +121,6 @@ def match2ms(match: regex.Match[str]) -> int:
     return int(ms + sec * 1000 + mi * 60 * 1000)
 
 
-class LyricLineType(Enum):
-    # just a list of situations, not intended for use
-    EMPTY = auto()
-    # ``
-    # literally empty
-    PURE_TEXT = auto()
-    # `如果时间逃走了 还有谁会记得我`
-    # no time tag found, regarded as reference line
-    BYLINE = auto()
-    # `[00:47.07]如果时间逃走了 还有谁会记得我[00:51.90]`
-    #  ^^^^^^^^^^ start time tag         ^^^^^^^^^^ end time tag
-    # ellipsis of end time tag is ok
-    # ellipsis of start time tag is also ok, but regarded as reference line
-    BYWORD = auto()
-    # `[00:47.07]如果时间逃走了<00:49.45>还有谁会记得我[00:51.90]`
-    #  ^^^^^^^^^^ by-line   ^^^^^^^^^^ by-word timetag
-    # use `[...]` to wrap by-word time tag is okay, but should give warning
-    # `<...><...>` is also a valid word, but content is ""
-
-
 class NullableStartEndModel(BaseModel):
     start: int | None = None
     end: int | None = None
@@ -171,10 +150,10 @@ class Lyrics(BaseModel):
     def __add__(self, other: Lyrics) -> Lyrics:
         return self.combine(other)
 
-    def combine(self, other: Lyrics, other_as_reference_only: bool = True) -> Lyrics:
+    def combine(self, other: Lyrics, *, other_as_refline_only: bool = True) -> Lyrics:
         new = Lyrics()
-        new.metadata.update(self.metadata)
         new.metadata.update(other.metadata)
+        new.metadata.update(self.metadata)
 
         pool: dict[int, LyricLine] = {}
         for line in self.lines:
@@ -187,7 +166,7 @@ class Lyrics(BaseModel):
             if line.start in pool:
                 pool[line.start].reference_lines.append(line.content)
                 pool[line.start].reference_lines.extend(line.reference_lines)
-            elif not other_as_reference_only:
+            elif not other_as_refline_only:
                 pool[line.start] = line
         new.lines = [v.model_copy(deep=True) for v in pool.values()]
         return new
@@ -196,7 +175,7 @@ class Lyrics(BaseModel):
     def loads(cls, lrc: str) -> Lyrics:
         return parse_file(lrc)
 
-    def dumps(self, with_metadata: bool = True) -> str:
+    def dumps(self, *, with_metadata: bool = True) -> str:
         return construct_lrc(self, with_metadata=with_metadata)
 
     def __str__(self) -> str:
@@ -338,7 +317,7 @@ def extract_metadata(s: str) -> dict[str, str]:
     return {m["key"]: m["value"] for m in matches}
 
 
-def parse_file(lrc: str) -> Lyrics:
+def parse_file(lrc: str, *, fill_implicit_line_end: bool = False) -> Lyrics:
     metadata = {}
     line_pool: dict[int, LyricLine] = {}
     last_tag: int | None = None
@@ -354,18 +333,24 @@ def parse_file(lrc: str) -> Lyrics:
         matches, line_str = split_line_timetags(line_str)
         time_tags = [match2ms(m) for m in matches]
         line = parse_line(line_str)
-        if not line:
-            last_tag = None
-            logger.debug("参照行标记已重置")
-            if time_tags and (t := time_tags[0]) not in line_pool:
-                line_pool[t] = LyricLine(start=t, content=[LyricWord(content="")])
-            continue
+
         if not time_tags:
+            if not line:
+                last_tag = None
+                logger.debug("参照行标记已重置")
+                continue
+
             if last_tag is None:
                 logger.warning(f"孤立的歌词行: {line!r} (raw={raw_line!r})")
                 continue
+
             logger.debug(f"添加 {line!r} 作为 {line_pool[last_tag]!r} 的参照行")
             line_pool[last_tag].reference_lines.append(line)
+            continue
+
+        if not line:
+            if (t := time_tags[0]) not in line_pool:
+                line_pool[t] = LyricLine(start=t, content=[LyricWord(content="")])
             continue
 
         word_start = line[0].start
@@ -398,18 +383,10 @@ def parse_file(lrc: str) -> Lyrics:
         if (lw := line.content[-1]).end is not None:
             line.end, lw.end = lw.end, None
 
-        # 或许应该加个开关...?
-
         # optional feature: 填充隐式结尾
-        # if line.end is None and idx + 1 < len(sorted_lines):
-        #     # 隐式结尾：持续到下一行开始
-        #     line.end = sorted_lines[idx + 1][0]
-
-        # optional feature: 填充首字起始和末字结束
-        # if (fw := line.content[0]).start is None:
-        #     fw.start = start
-        # if lw.end is None:
-        #     lw.end = line.end
+        if fill_implicit_line_end and line.end is None and idx + 1 < len(sorted_lines):
+            # 隐式结尾：持续到下一行开始
+            line.end = sorted_lines[idx + 1][0]
 
         lyrics.lines.append(line)
 
@@ -439,7 +416,7 @@ def construct_line(line: BasicLyricLine) -> str:
     return result
 
 
-def construct_lrc(lyrics: Lyrics, with_metadata: bool = True) -> str:
+def construct_lrc(lyrics: Lyrics, *, with_metadata: bool = True) -> str:
     buffer = StringIO()
 
     if with_metadata:
