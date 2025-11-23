@@ -393,12 +393,14 @@ def parse_file(lrc: str, *, fill_implicit_line_end: bool = False) -> Lyrics:
     return lyrics
 
 
-def ms_to_tag(ms: int, byword: bool = False) -> str:
+def ms2tag(ms: int, byword: bool = False, tail_digits: int = 3) -> str:
     mi = ms // 60000
     sec = (ms % 60000) // 1000
     ms = ms % 1000
     return (
-        f"<{mi:02d}:{sec:02d}.{ms:03d}>" if byword else f"[{mi:02d}:{sec:02d}.{ms:03d}]"
+        f"<{mi:0d}:{sec:02d}.{ms:0{tail_digits}d}>"
+        if byword
+        else f"[{mi:02d}:{sec:02d}.{ms:0{tail_digits}d}]"
     )
 
 
@@ -406,11 +408,11 @@ def construct_line(line: BasicLyricLine) -> str:
     result = ""
     for idx, word in enumerate(line):
         prefix = ""
-        suffix = "" if word.end is None else ms_to_tag(word.end, byword=True)
+        suffix = "" if word.end is None else ms2tag(word.end, byword=True)
         if word.start is not None and (
             (idx > 0 and line[idx - 1].end != word.start) or idx == 0
         ):
-            prefix = ms_to_tag(word.start, byword=True)
+            prefix = ms2tag(word.start, byword=True)
         result += f"{prefix}{word.content}{suffix}"
 
     return result
@@ -429,14 +431,14 @@ def construct_lrc(lyrics: Lyrics, *, with_metadata: bool = True) -> str:
         if line_start is None:
             logger.warning(f"未知的行起始时间: {line}")
             continue
-        buffer.write(ms_to_tag(line_start))
+        buffer.write(ms2tag(line_start))
         buffer.write(construct_line(line.content))
         if line.end:
-            buffer.write(ms_to_tag(line.end))
+            buffer.write(ms2tag(line.end))
         buffer.write("\n")
 
         for refline in line.reference_lines:
-            buffer.write(ms_to_tag(line_start))
+            buffer.write(ms2tag(line_start))
             buffer.write(construct_line(refline))
             buffer.write("\n")
 
