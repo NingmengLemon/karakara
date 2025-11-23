@@ -13,14 +13,14 @@ logger = getLogger()
 _REGEX_PATTERN_CACHE: dict[str, regex.Pattern[str]] = {}
 
 
-def compile_regex(r: str):
+def compile_regex(r: str) -> regex.Pattern[str]:
     if r not in _REGEX_PATTERN_CACHE:
         _REGEX_PATTERN_CACHE[r] = regex.compile(r, flags=regex.VERBOSE | regex.UNICODE)
     return _REGEX_PATTERN_CACHE[r]
 
 
 compile_regex(
-    TIMETAG_REGEX := r"""
+    LINE_TIMETAG_REGEX := r"""
     (?:
         \[
             \s*
@@ -89,7 +89,7 @@ compile_regex(
     )
 """
 )
-compile_regex(GENERIC_TIMETAG_REGEX := f"{TIMETAG_REGEX} | {WORD_TIMETAG_REGEX}")
+compile_regex(GENERIC_TIMETAG_REGEX := f"{LINE_TIMETAG_REGEX} | {WORD_TIMETAG_REGEX}")
 
 
 class LyricsParserError(Exception):
@@ -304,11 +304,11 @@ def is_str(obj: Any) -> TypeIs[str]:
 
 def split_line_timetags(raw_line: str) -> tuple[list[regex.Match[str]], str]:
     matches = []
-    m = compile_regex(f"^{TIMETAG_REGEX}").match(raw_line)
+    m = compile_regex(f"^{LINE_TIMETAG_REGEX}").match(raw_line)
     while m is not None:
         matches.append(m)
         raw_line = raw_line.removeprefix(m.group())
-        m = compile_regex(f"^{TIMETAG_REGEX}").match(raw_line)
+        m = compile_regex(f"^{LINE_TIMETAG_REGEX}").match(raw_line)
     return matches, raw_line
 
 
@@ -378,17 +378,17 @@ def parse_file(lrc: str, *, fill_implicit_line_end: bool = False) -> Lyrics:
 
     lyrics = Lyrics(metadata=metadata)
     sorted_lines = sorted(list(line_pool.items()), key=lambda o: o[0])
-    for idx, (start, line) in enumerate(sorted_lines):
-        line.start = start
-        if (lw := line.content[-1]).end is not None:
-            line.end, lw.end = lw.end, None
+    for idx, (line_start, fline) in enumerate(sorted_lines):
+        fline.start = line_start
+        if (lw := fline.content[-1]).end is not None:
+            fline.end, lw.end = lw.end, None
 
         # optional feature: 填充隐式结尾
-        if fill_implicit_line_end and line.end is None and idx + 1 < len(sorted_lines):
+        if fill_implicit_line_end and fline.end is None and idx + 1 < len(sorted_lines):
             # 隐式结尾：持续到下一行开始
-            line.end = sorted_lines[idx + 1][0]
+            fline.end = sorted_lines[idx + 1][0]
 
-        lyrics.lines.append(line)
+        lyrics.lines.append(fline)
 
     return lyrics
 

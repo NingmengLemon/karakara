@@ -13,7 +13,9 @@ dependencies = [
     "numpy<2",
     "openai-whisper>=20250625",
     "pydantic>=2.12.4",
+    "pypinyin>=0.55.0",
     "regex>=2025.11.3",
+    "requests>=2.32.5",
     "soundfile>=0.13.1",
     "torch",
     "torchaudio",
@@ -61,9 +63,11 @@ members = [
 dev = [
     "ipykernel>=6.31.0",
     "karakara",
+    "mypy>=1.18.2",
     "pytest>=8.4.2",
     "pytest-asyncio>=1.2.0",
     "pytest-cov>=7.0.0",
+    "types-requests>=2.32.4.20250913",
 ]
 
 [tool.uv]
