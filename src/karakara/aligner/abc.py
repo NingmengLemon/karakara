@@ -7,6 +7,8 @@ from typing import Annotated
 import numpy as np
 from numpy.typing import NDArray
 
+from karakara.utils import DEFAULT_SAMPLE_RATE
+
 
 @dataclass
 class AlignedWord:
@@ -20,6 +22,9 @@ class AbstractAligner(ABC):
 
     @abstractmethod
     def align(
-        self, audio: Annotated[NDArray[np.float32], "Shape[*,]"], text: str
+        self,
+        audio: Annotated[NDArray[np.float32], "Shape[*,]"],
+        text: str,
+        sample_rate: int = DEFAULT_SAMPLE_RATE,
     ) -> list[AlignedWord]:
         raise NotImplementedError
