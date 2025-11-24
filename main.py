@@ -1,13 +1,42 @@
-from pathlib import Path
+import logging
+import sys
 
-import demucs
-import demucs.api
+if "src" not in sys.path:
+    sys.path.insert(0, "src")
 
-repo = Path("models/sep/Demucs_Models/v3_v4_repo")
-models = demucs.api.list_models(repo)
-sep = demucs.api.Separator(
-    model=str(models["bag"]["htdemucs_6s"]),
-    repo=repo,
-    device="cuda",
-    # segment=44,
-)
+from karakara.kara_gen import gen_kara
+from karakara.spl_parser import Lyrics
+
+
+def setup_logging() -> logging.Logger:
+    logger = logging.getLogger()
+    logger.setLevel(logging.DEBUG)
+
+    logging.getLogger("torch").setLevel(logging.INFO)
+    logging.getLogger("torchaudio").setLevel(logging.INFO)
+    logging.getLogger("av").setLevel(logging.INFO)
+
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+
+    return logger
+
+
+if __name__ == "__main__":
+    setup_logging()
+    lyrics_src = input("lyrics:").strip() or "samples/spark_for_dream.lrc"
+    print("lrc src:", lyrics_src)
+    with open(lyrics_src, "r") as fp:
+        lyrics = Lyrics.loads(fp.read())
+    audio_src = input("audio file:").strip() or "samples/spark_for_dream.mp3"
+    print("audio src:", audio_src)
+    lyrics = gen_kara(lyrics, audio_src)
+    save_as = input("output:") or "tmp/spark_for_dream.lrc"
+    print("save as:", save_as)
+    with open(save_as, "w+") as fp:
+        fp.write(lyrics.dumps())

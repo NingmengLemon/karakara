@@ -79,7 +79,7 @@ def load_audio_to_tensor(file_path: str) -> tuple[Tensor, int]:
 # --------------------------------------------------------------------------
 def save_tensors_to_wav(
     stems: dict[str, Tensor], sample_rate: int, output_dir: str, original_filename: str
-):
+) -> None:
     """
     使用 PyAV 将音轨字典中的每个 Tensor 保存为 WAV 文件。
     """
@@ -126,7 +126,7 @@ def save_tensors_to_wav(
                 out_container.mux(packet)
 
 
-def main():
+def main() -> None:
     # --- 准备一个用于测试的音频文件 ---
     # 如果你已经有一个音频文件, 比如 "my_song.mp3", 可以直接使用它。
 

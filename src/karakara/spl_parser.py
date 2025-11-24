@@ -8,7 +8,7 @@ import regex
 from pydantic import BaseModel, Field
 from typing_extensions import TypeAlias, TypeIs
 
-logger = getLogger()
+logger = getLogger(__name__)
 
 _REGEX_PATTERN_CACHE: dict[str, regex.Pattern[str]] = {}
 
