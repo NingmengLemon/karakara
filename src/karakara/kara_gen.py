@@ -16,6 +16,46 @@ from karakara.utils import ms2sample
 
 logger = getLogger(__name__)
 
+metaline_keywords = [
+    "作词",
+    "作曲",
+    "编曲",
+    "演唱",
+    "专辑",
+    "歌手",
+    "制作人",
+    "和声",
+    "混音",
+    "录音",
+    "监制",
+    "策划",
+    "封面设计",
+    "文案",
+    "出品",
+    "OP",
+    "SP",
+    "翻译",
+    "PV",
+    "母带",
+    "调教",
+    "调校",
+    "曲绘",
+    "原曲",
+    "編曲",
+    "作詞",
+    "唄",
+    "呗",
+]
+metaline_regex = re.compile(
+    rf"({'|'.join([re.escape(k) for k in metaline_keywords])})\s*[：\:].+"
+)
+
+
+def judge_nonstandard_metaline(s: str) -> bool:
+    if metaline_regex.search(s):
+        return True
+    return False
+
 
 def judge_lang(s: str) -> Literal["ja", "zh", "en"] | None:
     """根据字符串内容判断语言类型。
@@ -64,10 +104,7 @@ def gen_kara(
                 do = True
         if not do or not text:
             continue
-        if re.search(
-            r"(作?词|作?曲|编曲|演?唱|专辑|歌手?|制作人?|和声|混音?|录音?|监制|策划|封面设计|文案|出品|OP|SP|翻译|PV|母带|调教|调校|曲?绘|原曲|編曲|作詞|唄|呗)\s*[：\:].+",
-            text,
-        ):
+        if judge_nonstandard_metaline(text):
             logger.info(f"found metadata in line, skip: {text!r}")
             continue
         start = ms2sample(line.start or 0, sample_rate)
