@@ -55,12 +55,12 @@ def gen_kara(
     lyrics = lyrics.model_copy(deep=True)
     vocal_stem, sample_rate = get_vocal_stem(audio)
     vocal_samples: NDArray[np.float32] = vocal_stem[0]
-    tlang = target_lang
+
     for idx, line in enumerate(lyrics.lines):
         do = False
         text = ""
         if len(line.content) == 1 and (text := line.content[0].content):
-            if judge_lang(text) == tlang:
+            if judge_lang(text) == target_lang:
                 do = True
         if not do or not text:
             continue
@@ -78,7 +78,7 @@ def gen_kara(
             elif (next_line := lyrics.lines[idx + 1]).start:
                 end = ms2sample(next_line.start, sample_rate)
 
-        logger.info(f"aligning line: sample_point[{start}: {end}] {text!r}")
+        logger.info(f"aligning line: sample_point[{start}, {end}] {text!r}")
         if start and end and start > end:
             continue
         audio_piece = vocal_samples[start:end] if end else vocal_samples[start:]
@@ -90,7 +90,7 @@ def gen_kara(
                 continue
             next_idx = text.find(word.word, iidx)
             logger.debug(
-                f"got aligned word: {word!r} at line {idx}, [{iidx}: {next_idx}]"
+                f"got aligned word: {word!r} at line {idx}, [{iidx}, {next_idx}]"
             )
             if next_idx > iidx:
                 words_kara.append(

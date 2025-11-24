@@ -8,10 +8,10 @@ import requests
 from numpy.typing import NDArray
 from typing_extensions import override
 
-from karakara.gentle_client import GentleClient
 from karakara.utils import DEFAULT_SAMPLE_RATE, save_audio
 
-from .abc import AbstractAligner, AlignedWord
+from ..abc import AbstractAligner, AlignedWord
+from .client import GentleClient
 
 
 class GentleAligner(AbstractAligner):
