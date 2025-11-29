@@ -77,12 +77,12 @@ def judge_lang(s: str) -> Literal["ja", "zh", "en"] | None:
     en_count = len(en_pattern.findall(s))
 
     counts = {"ja": ja_count, "zh": zh_count, "en": en_count}
-    max_lang = max(counts.keys(), key=counts.get)
+    max_lang = max(counts.keys(), key=counts.__getitem__)
     if counts[max_lang] == 0:
         logger.info(f"unknown language: {s!r}")
         return None
     logger.debug(f"language={max_lang!r}: {s!r}")
-    return max_lang
+    return max_lang  # type: ignore
 
 
 def gen_kara(
@@ -127,9 +127,10 @@ def gen_kara(
                 continue
             next_idx = text.find(word.word, iidx)
             logger.debug(
-                f"got aligned word: {word!r} at line {idx}, [{iidx}, {next_idx}]"
+                f"got aligned word: {word.word!r}, at time {word.position!r}ms at line {idx} [{next_idx}, {next_idx + len(word.word)}]"
             )
             if next_idx > iidx:
+                # 补上前一个单词和当前单词间的空隙
                 words_kara.append(
                     LyricWord(
                         start=words_kara[-1].end if words_kara else None,

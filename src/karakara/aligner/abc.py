@@ -2,11 +2,8 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Annotated
 
-import numpy as np
-from numpy.typing import NDArray
-
+from karakara.typ import NpAudioData, NpAudioSamples
 from karakara.utils import DEFAULT_SAMPLE_RATE
 
 
@@ -23,7 +20,7 @@ class AbstractAligner(ABC):
     @abstractmethod
     def align(
         self,
-        audio: Annotated[NDArray[np.float32], "Shape[*,]"],
+        audio: NpAudioData | NpAudioSamples,
         text: str,
         sample_rate: int = DEFAULT_SAMPLE_RATE,
     ) -> list[AlignedWord]:

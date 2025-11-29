@@ -398,7 +398,7 @@ def ms2tag(ms: int, byword: bool = False, tail_digits: int = 3) -> str:
     sec = (ms % 60000) // 1000
     ms = ms % 1000
     return (
-        f"<{mi:0d}:{sec:02d}.{ms:0{tail_digits}d}>"
+        f"<{mi:02d}:{sec:02d}.{ms:0{tail_digits}d}>"
         if byword
         else f"[{mi:02d}:{sec:02d}.{ms:0{tail_digits}d}]"
     )

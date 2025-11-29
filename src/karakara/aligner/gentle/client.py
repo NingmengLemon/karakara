@@ -12,6 +12,7 @@ gentle_client.py
 from __future__ import annotations
 
 import io
+import logging
 import time
 from pathlib import Path
 from typing import Any, Union
@@ -19,6 +20,7 @@ from typing import Any, Union
 import requests
 from typing_extensions import TypeAlias
 
+logger = logging.getLogger(__name__)
 PathLike: TypeAlias = Union[str, Path]
 
 
@@ -196,7 +198,8 @@ class GentleClient:
             timeout=(self.timeout if timeout is None else timeout),
         )
         resp.raise_for_status()
-        return resp.json()  # type: ignore
+        data = resp.json()
+        return data  # type: ignore
 
     def get_status(self, uid: str, timeout: float | None = None) -> dict[str, Any]:
         """

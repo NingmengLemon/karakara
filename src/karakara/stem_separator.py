@@ -49,7 +49,7 @@ def get_vocal_stem(
     if separator is None:
         separator = get_separator()
     sample_rate = separator.samplerate
-    logger.info(f"separating vocal stem, model={separator.model!r}, sr={sample_rate!r}")
+    logger.info(f"separating vocal stem, sr={sample_rate!r}")
     audio_np = load_audio(src, sample_rate=sample_rate)
     audio_tensor = ndarray2tensor(audio_np)
     _, stems = separator.separate_tensor(audio_tensor, sr=sample_rate)

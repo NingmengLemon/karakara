@@ -1,4 +1,3 @@
-import logging
 import sys
 
 if "src" not in sys.path:
@@ -6,26 +5,7 @@ if "src" not in sys.path:
 
 from karakara.kara_gen import gen_kara
 from karakara.spl_parser import Lyrics
-
-
-def setup_logging() -> logging.Logger:
-    logger = logging.getLogger()
-    logger.setLevel(logging.DEBUG)
-
-    logging.getLogger("torch").setLevel(logging.INFO)
-    logging.getLogger("torchaudio").setLevel(logging.INFO)
-    logging.getLogger("av").setLevel(logging.INFO)
-
-    formatter = logging.Formatter(
-        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    )
-
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(formatter)
-    logger.addHandler(console_handler)
-
-    return logger
-
+from karakara.utils import setup_logging
 
 if __name__ == "__main__":
     setup_logging()

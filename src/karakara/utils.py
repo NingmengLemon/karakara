@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -11,7 +12,26 @@ from numpy.typing import NDArray
 
 from karakara.typ import NpAudioData
 
-DEFAULT_SAMPLE_RATE = 16000
+DEFAULT_SAMPLE_RATE = 44100
+
+
+def setup_logging() -> logging.Logger:
+    logger = logging.getLogger()
+    logger.setLevel(logging.DEBUG)
+
+    logging.getLogger("torch").setLevel(logging.INFO)
+    logging.getLogger("torchaudio").setLevel(logging.INFO)
+    logging.getLogger("av").setLevel(logging.INFO)
+
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+
+    return logger
 
 
 def load_audio(

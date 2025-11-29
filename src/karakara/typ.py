@@ -7,3 +7,4 @@ from numpy.typing import NDArray
 from typing_extensions import TypeAlias
 
 NpAudioData: TypeAlias = Annotated[NDArray[np.float32], "Shape[*, *]"]
+NpAudioSamples: TypeAlias = Annotated[NDArray[np.float32], "Shape[*,]"]
