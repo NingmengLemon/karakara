@@ -62,7 +62,7 @@ def load_audio_to_tensor(file_path: str) -> tuple[Tensor, int]:
     if waveform_np.dtype != np.float32:
         # 如果是整数类型, 需要归一化到 [-1.0, 1.0]
         if np.issubdtype(waveform_np.dtype, np.integer):
-            max_val = np.iinfo(waveform_np.dtype).max
+            max_val = np.iinfo(waveform_np.dtype).max  # type: ignore
             waveform_np = waveform_np.astype(np.float32) / max_val
         else:
             # 其他浮点类型直接转换

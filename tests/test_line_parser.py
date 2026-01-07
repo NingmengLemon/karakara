@@ -15,7 +15,7 @@ def pydantic_eq(a: list[LyricWord], b: list[LyricWord]) -> bool:
 class TestParseLine:
     """测试 parse_line 函数的各种情况"""
 
-    def test_basic_line(self):
+    def test_basic_line(self) -> None:
         """测试基础歌词行"""
         result = parse_line("[00:05.000]今天天气真好")
         expected_words = [LyricWord(content="今天天气真好", start=5000, end=None)]
@@ -26,7 +26,7 @@ class TestParseLine:
         assert e is None
         assert pydantic_eq(result, expected_words)
 
-    def test_explicit_end_same_line(self):
+    def test_explicit_end_same_line(self) -> None:
         """测试同一行内的显式行结尾"""
         result = parse_line("[00:15.000]这句歌词只持续两秒哦[00:17.000]")
         expected_words = [
@@ -39,7 +39,7 @@ class TestParseLine:
         assert e == 17000
         assert pydantic_eq(result, expected_words)
 
-    def test_empty_line_timestamp(self):
+    def test_empty_line_timestamp(self) -> None:
         """测试空行时间戳（清空歌词）"""
         result = parse_line("[00:10.500]")
         expected_words = [LyricWord(content="", start=10500, end=None)]
@@ -50,7 +50,7 @@ class TestParseLine:
         assert e is None
         assert pydantic_eq(result, expected_words)
 
-    def test_timestamp_format_variations(self):
+    def test_timestamp_format_variations(self) -> None:
         """测试时间戳格式变体"""
         # 测试 .5 → 500 毫秒
         result1 = parse_line("[00:22.5]喵~ 喵~ 喵~")
@@ -70,7 +70,7 @@ class TestParseLine:
         assert result3 is not None
         assert result3[0].start == 62500
 
-    def test_byword_angle_brackets(self):
+    def test_byword_angle_brackets(self) -> None:
         """测试使用 <> 标记的逐字歌词"""
         result = parse_line(
             "[00:40.000]要<00:41.000>吃<00:41.500>小<00:42.000>鱼<00:42.500>干[00:44.000]"
@@ -89,7 +89,7 @@ class TestParseLine:
         assert e == 44000
         assert pydantic_eq(result, expected_words)
 
-    def test_delayed_byword_start(self):
+    def test_delayed_byword_start(self) -> None:
         """测试延迟开始的逐字标记"""
         result = parse_line(
             "[00:40.000]<00:41.000>要<00:41.500>吃<00:42.000>小<00:42.500>鱼<00:43.000>干[00:44.000]"
@@ -109,7 +109,7 @@ class TestParseLine:
         assert e == 44000
         assert pydantic_eq(result, expected_words)
 
-    def test_mixed_byword_brackets(self):
+    def test_mixed_byword_brackets(self) -> None:
         """测试混合使用 [] 和 <> 的逐字标记"""
         # 这里应该会产生 logging 消息
         result = parse_line(
@@ -130,7 +130,7 @@ class TestParseLine:
         assert e == 44000
         assert pydantic_eq(result, expected_words)
 
-    def test_special_characters(self):
+    def test_special_characters(self) -> None:
         """测试特殊字符和颜文字"""
         result = parse_line("[00:12.000]好呀！=^._.^= inte")
         expected_words = [
@@ -140,7 +140,7 @@ class TestParseLine:
         assert result is not None
         assert pydantic_eq(result, expected_words)
 
-    def test_invalid_byword_timestamp(self):
+    def test_invalid_byword_timestamp(self) -> None:
         """测试错误的逐字时间戳（时间倒序）"""
         result = parse_line("[00:50.000]第一遍<00:49.000>正常<00:52.000>")
         # 应该忽略 <00:49.000>，因为小于开始时间
@@ -151,7 +151,7 @@ class TestParseLine:
         assert result is not None
         assert pydantic_eq(result, expected_words)
 
-    def test_only_start_and_end(self):
+    def test_only_start_and_end(self) -> None:
         """测试只有开始和结束时间戳的情况"""
         result = parse_line("[00:50.000]简单的歌词行[00:52.000]")
         expected_words = [LyricWord(content="简单的歌词行", start=50000, end=52000)]
@@ -160,7 +160,7 @@ class TestParseLine:
         assert pydantic_eq(result, expected_words)
 
     # 新增的边界测试用例
-    def test_whitespace_handling(self):
+    def test_whitespace_handling(self) -> None:
         """测试前后空格的处理"""
         result = parse_line("[00:30.000]  前后有空格  ")
         expected_words = [LyricWord(content="  前后有空格  ", start=30000, end=None)]
@@ -168,7 +168,7 @@ class TestParseLine:
         assert result is not None
         assert pydantic_eq(result, expected_words)
 
-    def test_multiple_spaces_in_text(self):
+    def test_multiple_spaces_in_text(self) -> None:
         """测试文本中的多个连续空格"""
         result = parse_line("[00:31.000]这里    有    很多空格")
         expected_words = [
@@ -178,7 +178,7 @@ class TestParseLine:
         assert result is not None
         assert pydantic_eq(result, expected_words)
 
-    def test_unicode_characters(self):
+    def test_unicode_characters(self) -> None:
         """测试Unicode字符"""
         result = parse_line("[00:32.000]🎵音乐🎶和😺表情")
         expected_words = [LyricWord(content="🎵音乐🎶和😺表情", start=32000, end=None)]
@@ -186,7 +186,7 @@ class TestParseLine:
         assert result is not None
         assert pydantic_eq(result, expected_words)
 
-    def test_edge_case_timestamps(self):
+    def test_edge_case_timestamps(self) -> None:
         """测试边界情况的时间戳"""
         # 最大毫秒数
         result1 = parse_line("[99:59.999999]边界测试")
@@ -200,7 +200,7 @@ class TestParseLine:
         assert result2 is not None
         assert result2[0].start == 1
 
-    def test_no_text_after_byword(self):
+    def test_no_text_after_byword(self) -> None:
         """测试逐字标记后没有文本的情况"""
         result = parse_line("[00:45.000]测试<00:46.000>")
         expected_words = [LyricWord(content="测试", start=45000, end=46000)]
@@ -208,7 +208,7 @@ class TestParseLine:
         assert result is not None
         assert pydantic_eq(result, expected_words)
 
-    def test_only_byword_no_text(self):
+    def test_only_byword_no_text(self) -> None:
         """测试只有逐字标记没有实际文本的情况"""
         result = parse_line("[00:47.000]<00:48.000>")
         expected_words = [LyricWord(content="", start=47000, end=48000)]
@@ -217,7 +217,7 @@ class TestParseLine:
         assert result[0].start == 47000
         assert pydantic_eq(result, expected_words)
 
-    def test_complex_mixed_scenario(self):
+    def test_complex_mixed_scenario(self) -> None:
         """测试复杂的混合场景"""
         result = parse_line("<01:31.000>开始<01:32.000>唱歌[01:33.000]谢谢[01:34.000]")
         expected_words = [
@@ -234,7 +234,7 @@ class TestParseLine:
 
 
 # 运行测试的便捷函数
-def run_tests():
+def run_tests() -> None:
     """运行所有测试"""
     import os
     import sys
