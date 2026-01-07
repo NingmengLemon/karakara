@@ -12,6 +12,7 @@ dependencies = [
     "funasr>=1.2.7",
     "numpy<2",
     "openai-whisper>=20250625",
+    "phonemizer>=3.3.0",
     "pydantic>=2.12.4",
     "pypinyin>=0.55.0",
     "regex>=2025.11.3",
