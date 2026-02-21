@@ -404,21 +404,32 @@ def ms2tag(ms: int, byword: bool = False, tail_digits: int = 3) -> str:
     )
 
 
-def construct_line(line: BasicLyricLine) -> str:
+def construct_line(
+    line: BasicLyricLine, use_bracket_for_byword_tag: bool = False
+) -> str:
     result = ""
     for idx, word in enumerate(line):
         prefix = ""
-        suffix = "" if word.end is None else ms2tag(word.end, byword=True)
+        suffix = (
+            ""
+            if word.end is None
+            else ms2tag(word.end, byword=not use_bracket_for_byword_tag)
+        )
         if word.start is not None and (
             (idx > 0 and line[idx - 1].end != word.start) or idx == 0
         ):
-            prefix = ms2tag(word.start, byword=True)
+            prefix = ms2tag(word.start, byword=not use_bracket_for_byword_tag)
         result += f"{prefix}{word.content}{suffix}"
 
     return result
 
 
-def construct_lrc(lyrics: Lyrics, *, with_metadata: bool = True) -> str:
+def construct_lrc(
+    lyrics: Lyrics,
+    *,
+    with_metadata: bool = True,
+    use_bracket_for_byword_tag: bool = False,
+) -> str:
     buffer = StringIO()
 
     if with_metadata:
@@ -432,7 +443,12 @@ def construct_lrc(lyrics: Lyrics, *, with_metadata: bool = True) -> str:
             logger.warning(f"未知的行起始时间: {line}")
             continue
         buffer.write(ms2tag(line_start))
-        buffer.write(construct_line(line.content))
+        buffer.write(
+            construct_line(
+                line.content,
+                use_bracket_for_byword_tag=use_bracket_for_byword_tag,
+            )
+        )
         if line.end:
             buffer.write(ms2tag(line.end))
         buffer.write("\n")
