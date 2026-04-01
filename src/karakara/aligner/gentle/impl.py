@@ -7,7 +7,7 @@ import requests
 from typing_extensions import override
 
 from karakara.typ import NpAudioData, NpAudioSamples
-from karakara.utils import DEFAULT_SAMPLE_RATE, save_audio
+from karakara.utils.io import DEFAULT_SAMPLE_RATE, save_audio
 
 from ..abc import AbstractAligner, AlignedWord
 from .client import GentleClient

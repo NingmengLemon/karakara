@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 from karakara.typ import NpAudioData, NpAudioSamples
-from karakara.utils import DEFAULT_SAMPLE_RATE
+from karakara.utils.io import DEFAULT_SAMPLE_RATE
 
 
 @dataclass
