@@ -1,8 +1,9 @@
 """
-text.py
+metadata.py
 
 歌词文本相关的工具函数。
 """
+
 from __future__ import annotations
 
 import re

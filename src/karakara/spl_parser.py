@@ -175,8 +175,14 @@ class Lyrics(BaseModel):
     def loads(cls, lrc: str) -> Lyrics:
         return parse_file(lrc)
 
-    def dumps(self, *, with_metadata: bool = True) -> str:
-        return construct_lrc(self, with_metadata=with_metadata)
+    def dumps(
+        self, *, with_metadata: bool = True, use_bracket_for_byword_tag: bool = False
+    ) -> str:
+        return construct_lrc(
+            self,
+            with_metadata=with_metadata,
+            use_bracket_for_byword_tag=use_bracket_for_byword_tag,
+        )
 
     def __str__(self) -> str:
         return self.dumps()
@@ -405,7 +411,9 @@ def ms2tag(ms: int, byword: bool = False, tail_digits: int = 3) -> str:
 
 
 def construct_line(
-    line: BasicLyricLine, use_bracket_for_byword_tag: bool = False
+    line: BasicLyricLine,
+    use_bracket_for_byword_tag: bool = False,
+    line_start: int | None = None,
 ) -> str:
     result = ""
     for idx, word in enumerate(line):
@@ -415,10 +423,12 @@ def construct_line(
             if word.end is None
             else ms2tag(word.end, byword=not use_bracket_for_byword_tag)
         )
-        if word.start is not None and (
-            (idx > 0 and line[idx - 1].end != word.start) or idx == 0
-        ):
-            prefix = ms2tag(word.start, byword=not use_bracket_for_byword_tag)
+        if word.start is not None:
+            if idx == 0:
+                if word.start != line_start:
+                    prefix = ms2tag(word.start, byword=not use_bracket_for_byword_tag)
+            elif line[idx - 1].end != word.start:
+                prefix = ms2tag(word.start, byword=not use_bracket_for_byword_tag)
         result += f"{prefix}{word.content}{suffix}"
 
     return result
@@ -436,8 +446,9 @@ def construct_lrc(
         for mk, mv in lyrics.metadata.items():
             buffer.write(f"[{mk}: {mv}]\n")
 
-    for line in lyrics.lines:
-        buffer.write("\n")
+    for line_idx, line in enumerate(lyrics.lines):
+        if line_idx > 0:
+            buffer.write("\n")
         line_start = line.start
         if line_start is None:
             logger.warning(f"未知的行起始时间: {line}")
@@ -447,15 +458,16 @@ def construct_lrc(
             construct_line(
                 line.content,
                 use_bracket_for_byword_tag=use_bracket_for_byword_tag,
+                line_start=line_start,
             )
         )
-        if line.end:
+        if line.end is not None:
             buffer.write(ms2tag(line.end))
         buffer.write("\n")
 
         for refline in line.reference_lines:
             buffer.write(ms2tag(line_start))
-            buffer.write(construct_line(refline))
+            buffer.write(construct_line(refline, line_start=line_start))
             buffer.write("\n")
 
     return buffer.getvalue()

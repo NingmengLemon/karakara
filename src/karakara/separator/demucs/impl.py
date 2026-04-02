@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import warnings
+from collections.abc import Callable
 from functools import lru_cache
 from logging import getLogger
 from pathlib import Path
+from typing import Any
 
-import demucs
 import demucs.api
+import demucs.repo
+import demucs.states
+import torch
 from typing_extensions import override
 
 from karakara.typ import NpAudioData, NpAudioSamples
@@ -18,6 +23,30 @@ DEFAULT_MODEL = "htdemucs_6s"
 DEFAULT_DEVICE = "cuda:0"
 
 logger = getLogger(__name__)
+
+# ── PyTorch 2.6+ 兼容性修复 ────────────────────────────────────
+# demucs 的 checkpoint 使用 pickle 序列化了完整的模型类对象，
+# 而 PyTorch 2.6+ 默认 weights_only=True 会拒绝反序列化。
+# 这里精确地 patch demucs 的 load_model，不影响其他代码的 torch.load。
+_original_load_model: Callable[..., Any] = demucs.states.load_model
+
+
+def _patched_load_model(
+    path_or_package: dict[str, Any] | str | Path,
+    strict: bool = False,
+) -> Any:
+    if isinstance(path_or_package, (str, Path)):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            path_or_package = torch.load(
+                path_or_package, map_location="cpu", weights_only=False
+            )
+    return _original_load_model(path_or_package, strict)
+
+
+demucs.states.load_model = _patched_load_model
+demucs.repo.load_model = _patched_load_model  # repo.py 持有独立引用
+# ── 修复结束 ──────────────────────────────────────────────────
 
 
 @lru_cache(maxsize=4)

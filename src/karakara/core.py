@@ -9,7 +9,12 @@ from numpy.typing import NDArray
 
 from karakara.aligner.abc import AbstractAligner
 from karakara.debug import AudioDumper
-from karakara.preprocess import AudioPreprocessConfig
+from karakara.preprocess import (
+    AudioPreprocessConfig,
+    compress_dynamic_range,
+    normalize_loudness,
+    suppress_vibrato,
+)
 from karakara.separator.abc import AbstractStemSeparator
 from karakara.spl_parser import Lyrics, LyricWord
 from karakara.utils.io import load_audio, ms2sample
@@ -17,9 +22,6 @@ from karakara.utils.lang import detect_lang
 from karakara.utils.metadata import is_metadataline
 
 logger = getLogger(__name__)
-
-# 支持对齐的语言列表（与 aligner 实现对应）
-SUPPORTED_LANGS: set[Literal["en", "ja", "zh"]] = {"en", "ja", "zh"}
 
 
 def gen_kara(
@@ -39,7 +41,8 @@ def gen_kara(
     Args:
         lyrics: 已解析的 Lyrics 对象（行级歌词）
         audio: 音频文件路径
-        aligner: 对齐器实例，None 时默认使用 GentleAligner
+        aligner: 对齐器实例
+        separator: 人声分离器实例
         target_lang: 目标处理语言，None 时处理所有检测到的语言
         preprocess_config: 音频预处理配置，None 时使用默认值
         dump_dir: 调试音频导出目录，None 时不导出
@@ -65,14 +68,10 @@ def gen_kara(
     vocal_np: NDArray[np.float32] = vocal_stem[0]
 
     if config.normalize:
-        from karakara.preprocess import normalize_loudness
-
         vocal_np = normalize_loudness(vocal_np, config.target_dbfs)
         dumper.dump("02_normalized", vocal_np, sample_rate)
 
     if config.suppress_vibrato:
-        from karakara.preprocess import suppress_vibrato
-
         vocal_np = suppress_vibrato(
             vocal_np,
             sample_rate,
@@ -82,8 +81,6 @@ def gen_kara(
         dumper.dump("03_vibrato_suppressed", vocal_np, sample_rate)
 
     if config.compress:
-        from karakara.preprocess import compress_dynamic_range
-
         vocal_np = compress_dynamic_range(
             vocal_np,
             sample_rate,
@@ -116,16 +113,16 @@ def gen_kara(
         start = ms2sample(line.start or 0, sample_rate)
         end: int | None = None
         if idx < len(lyrics.lines) - 1:
-            if line.end:
+            if line.end is not None:
                 end = ms2sample(line.end, sample_rate)
-            elif (next_line := lyrics.lines[idx + 1]).start:
+            elif (next_line := lyrics.lines[idx + 1]).start is not None:
                 end = ms2sample(next_line.start, sample_rate)
 
         logger.info(f"aligning line {idx}: sample_point[{start}, {end}] {text!r}")
         if end is not None and start > end:
             continue
 
-        audio_piece = vocal_np[start:end] if end else vocal_np[start:]
+        audio_piece = vocal_np[start:end] if end is not None else vocal_np[start:]
         dumper.dump(f"05_line_{idx}", audio_piece, sample_rate)
         words = aligner.align(audio_piece, text, sample_rate)
 
@@ -136,6 +133,12 @@ def gen_kara(
             if not (pos := word.position):
                 continue
             next_idx = text.find(word.word, iidx)
+            if next_idx == -1:
+                logger.warning(
+                    f"aligned word {word.word!r} not found in text "
+                    f"at pos {iidx}, skipping"
+                )
+                continue
             logger.debug(
                 f"got aligned word: {word.word!r}, at time {pos!r}ms "
                 f"at line {idx} [{next_idx}, {next_idx + len(word.word)}]"
@@ -170,6 +173,10 @@ def gen_kara(
                 )
             )
 
+        # 因为先前是 model_copy(deep=True), 所以这里直接修改没有问题
+        if words_kara and words_kara[-1].end is not None:
+            line.end = words_kara[-1].end
+            words_kara[-1].end = None
         line.content = words_kara
 
     return lyrics

@@ -14,14 +14,13 @@ from __future__ import annotations
 import io
 import logging
 import time
+from os import PathLike
 from pathlib import Path
-from typing import Any, Union
+from typing import Any
 
 import requests
-from typing_extensions import TypeAlias
 
 logger = logging.getLogger(__name__)
-PathLike: TypeAlias = Union[str, Path]
 
 
 class GentleClient:
@@ -53,9 +52,7 @@ class GentleClient:
     def _build_submit_fields(
         self, transcript: str = "", disfluency: bool = False, conservative: bool = False
     ) -> dict[str, str]:
-        data: dict[str, str] = {}
-        if transcript is not None:
-            data["transcript"] = transcript
+        data: dict[str, str] = {"transcript": transcript}
         if disfluency:
             # 服务器只检查字段是否存在
             data["disfluency"] = "1"
@@ -198,8 +195,8 @@ class GentleClient:
             timeout=(self.timeout if timeout is None else timeout),
         )
         resp.raise_for_status()
-        data = resp.json()
-        return data  # type: ignore
+        result = resp.json()
+        return result  # type: ignore
 
     def get_status(self, uid: str, timeout: float | None = None) -> dict[str, Any]:
         """
