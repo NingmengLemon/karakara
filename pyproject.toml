@@ -3,23 +3,23 @@ name = "karakara"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = "==3.9.*"
+requires-python = "==3.12.*"
 dependencies = [
     "av>=15.1.0",
     "demucs",
     "eval-type-backport>=0.3.0",
-    "faster-whisper>=1.2.1",
-    "funasr>=1.2.7",
+    # "faster-whisper>=1.2.1",
+    # "funasr>=1.2.7",
     "numpy<2",
-    "openai-whisper>=20250625",
-    "phonemizer>=3.3.0",
+    # "openai-whisper>=20250625",
+    # "phonemizer>=3.3.0",
     "pydantic>=2.12.4",
     "pypinyin>=0.55.0",
     "regex>=2025.11.3",
     "requests>=2.32.5",
     "soundfile>=0.13.1",
-    "torch",
-    "torchaudio",
+    "torch>=2.9.0",
+    "torchaudio>=2.9.0",
     "typing-extensions>=4.15.0",
     "zhconv>=1.4.3",
 ]
@@ -35,10 +35,11 @@ warn_redundant_casts = true
 disallow_untyped_calls = true
 strict_equality = true
 
+
 [tool.uv.sources]
-demucs = { git = "https://github.com/facebookresearch/demucs" }
-torch = { index = "pytorch_cu118" }
-torchaudio = { index = "pytorch_cu118" }
+demucs = { git = "https://github.com/adefossez/demucs" }
+torch = { index = "pytorch_cu130" }
+torchaudio = { index = "pytorch_cu130" }
 
 [[tool.uv.index]]
 name = "cernet"
@@ -46,26 +47,42 @@ url = "https://mirrors.cernet.edu.cn/pypi/web/simple"
 default = true
 
 [[tool.uv.index]]
+name = "pytorch_cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
 name = "pytorch_cu118"
 url = "https://download.pytorch.org/whl/cu118"
+explicit = true
 
 [[tool.uv.index]]
 name = "pytorch_cu126"
 url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch_cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
 
 [dependency-groups]
 dev = [
     "ipykernel>=6.31.0",
+    "modelscope>=1.35.3",
     "mypy>=1.18.2",
     "pytest>=8.4.2",
     "pytest-asyncio>=1.2.0",
     "pytest-cov>=7.0.0",
+    "ruff>=0.15.8",
     "types-requests>=2.32.4.20250913",
 ]
+qwenaligner = ["fastapi>=0.135.3", "pydantic>=2.12.4", "qwen-asr>=0.0.6"]
 
 [tool.uv]
-index-strategy = "unsafe-best-match"
-required-environments = [
-    "sys_platform == 'win32' and platform_machine == 'AMD64'",
-]
 package = true
+override-dependencies = [
+    "torchaudio>=0.8",
+    # override demucs 的 torchaudio 依赖, 因为它的版本太旧了
+    # 已在项目内加了兼容性的 monkey patch
+]

@@ -6,14 +6,15 @@
 
 于是有参考资料:
 
-- [FunASR](https://github.com/modelscope/FunASR)
+- ~~[FunASR](https://github.com/modelscope/FunASR)~~
 - [SPL Format](https://moriafly.com/standards/spl.html)
 - [UVR Models](https://github.com/TRvlvr/model_repo/releases/)
 - [Demucs](https://github.com/adefossez/demucs)
-- [whisper](https://github.com/openai/whisper)
-- [faster-whisper](https://github.com/AIXerum/faster-whisper)
-- [mfa](https://mfa-models.readthedocs.io/en/latest/index.html)
-- [gentle on dockerhub](https://hub.docker.com/r/lowerquality/gentle)
+- ~~[whisper](https://github.com/openai/whisper)~~
+- ~~[faster-whisper](https://github.com/AIXerum/faster-whisper)~~
+- ~~[mfa](https://mfa-models.readthedocs.io/en/latest/index.html)~~
+- [Gentle container](https://hub.docker.com/r/lowerquality/gentle)
+- [Qwen3ForcedAligner](https://huggingface.co/Qwen/Qwen3-ForcedAligner-0.6B)
 
 > 已知一首歌的音频文件和行级别精度的歌词文件, 能否用程序做出词级别精度的歌词文件呢...?
 
