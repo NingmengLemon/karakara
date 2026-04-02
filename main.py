@@ -2,6 +2,7 @@ from karakara.aligner import GentleAligner
 from karakara.core import gen_kara
 from karakara.logging import setup_logging
 from karakara.preprocess import AudioPreprocessConfig
+from karakara.separator.demucs import DemucsSeparator
 from karakara.spl_parser import Lyrics
 
 if __name__ == "__main__":
@@ -28,6 +29,7 @@ if __name__ == "__main__":
         lyrics,
         audio_src,
         aligner=GentleAligner(),
+        separator=DemucsSeparator(),
         preprocess_config=preprocess_cfg,
         dump_dir=dump_dir,
     )

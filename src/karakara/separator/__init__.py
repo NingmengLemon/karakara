@@ -1,4 +1,4 @@
-from .abc import StemSeparator
+from .abc import AbstractStemSeparator
 from .demucs import DemucsSeparator
 
-__all__ = ["StemSeparator", "DemucsSeparator"]
+__all__ = ["AbstractStemSeparator", "DemucsSeparator"]

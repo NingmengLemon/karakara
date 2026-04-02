@@ -10,7 +10,9 @@ logger = getLogger(__name__)
 # 语言检测
 # --------------------------------------------------------------------------
 
-_JA_PATTERN = re.compile(r"[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FBF\u3000-\u303F]")
+# 日语检测：仅匹配假名（平假名 + 片假名），不包含 CJK 汉字以避免与中文重叠
+# 但是这也意味着包含汉字的日语歌词可能被误判为中文, 这里还需要改
+_JA_PATTERN = re.compile(r"[\u3040-\u309F\u30A0-\u30FF]")
 _ZH_PATTERN = re.compile(r"[\u4E00-\u9FFF]")
 _EN_PATTERN = re.compile(r"[A-Za-z]")
 

@@ -13,10 +13,10 @@ from numpy.typing import NDArray
 
 from karakara.typ import NpAudioData, NpAudioSamples
 
-
 # --------------------------------------------------------------------------
 # 预处理配置
 # --------------------------------------------------------------------------
+
 
 @dataclass
 class AudioPreprocessConfig:
@@ -43,6 +43,7 @@ class AudioPreprocessConfig:
 # 辅助函数
 # --------------------------------------------------------------------------
 
+
 def _db_to_linear(db: float) -> float:
     return float(10 ** (db / 20))
 
@@ -60,6 +61,9 @@ def _envelope(
 ) -> NDArray[np.float32]:
     """计算信号的 RMS 包络。
 
+    使用 cumsum（累积和）方法实现 O(n) 的移动 RMS，
+    替代 np.convolve 的 O(n×m) 直接卷积。
+
     Args:
         samples: 输入样本 (shape: [samples], 即 1D)
         sample_rate: 采样率 (Hz)
@@ -68,21 +72,31 @@ def _envelope(
     Returns:
         与输入等长的 RMS 包络数组。
     """
+    n = len(samples)
     window_samples = max(1, int(sample_rate * window_ms / 1000))
-    # 简单的移动 RMS
-    padded = np.pad(samples, window_samples, mode="edge")
-    square = padded**2
-    window = np.ones(window_samples) / window_samples
-    rms = np.sqrt(np.convolve(square, window, mode="valid"))
-    # 截断/填充到原始长度
-    if len(rms) < len(samples):
-        rms = np.pad(rms, (0, len(samples) - len(rms)))
-    return rms[: len(samples)].astype(np.float32)
+
+    # 居中窗口的 edge-padding
+    pad_left = window_samples // 2
+    pad_right = window_samples - pad_left - 1
+    padded = np.pad(samples, (pad_left, pad_right), mode="edge")
+
+    # O(n) 移动均方: cumsum 方法
+    square = padded.astype(np.float64) ** 2  # float64 防止累积误差
+    cumsum = np.empty(len(square) + 1, dtype=np.float64)
+    cumsum[0] = 0.0
+    np.cumsum(square, out=cumsum[1:])
+
+    # moving_sum[i] = cumsum[i + window_samples] - cumsum[i]
+    moving_sum = cumsum[window_samples:] - cumsum[:-window_samples]
+    rms = np.sqrt(moving_sum / window_samples)
+
+    return rms[:n].astype(np.float32)  # type: ignore[no-any-return]
 
 
 # --------------------------------------------------------------------------
 # 各预处理步骤
 # --------------------------------------------------------------------------
+
 
 def normalize_loudness(
     audio: NpAudioData | NpAudioSamples,
@@ -203,8 +217,6 @@ def compress_dynamic_range(
     attack_samples = max(1, int(sample_rate * attack_ms / 1000))
     release_samples = max(1, int(sample_rate * release_ms / 1000))
 
-    gain = np.ones(len(env), dtype=np.float32)
-
     # 计算目标增益（理想值）
     over_threshold = env > threshold_linear
     target_gain = np.where(
@@ -214,14 +226,23 @@ def compress_dynamic_range(
     ) / (env + 1e-10)
 
     # 用 attack/release 系数平滑增益
-    a_attack = 1.0 - np.exp(-1.0 / attack_samples)
-    a_release = 1.0 - np.exp(-1.0 / release_samples)
+    # 注意：这是变系数 IIR 滤波器（递推依赖前一帧），
+    # 无法完全向量化，但通过 Python 原生列表操作替代 numpy
+    # 标量索引可获得约 5–10 倍加速。
+    a_a = float(1.0 - np.exp(-1.0 / attack_samples))
+    a_r = float(1.0 - np.exp(-1.0 / release_samples))
 
-    for i in range(1, len(gain)):
-        coeff = a_attack if env[i] > env[i - 1] else a_release
-        gain[i] = gain[i - 1] + coeff * (target_gain[i] - gain[i - 1])
+    # 转为 Python list 避免 numpy 标量索引开销
+    env_list = env.tolist()
+    tg_list = target_gain.tolist()
+    n = len(env_list)
+    gain_list = [0.0] * n
+    gain_list[0] = 1.0
+    for i in range(1, n):
+        c = a_a if env_list[i] > env_list[i - 1] else a_r
+        gain_list[i] = gain_list[i - 1] + c * (tg_list[i] - gain_list[i - 1])
 
-    gain = gain.astype(np.float32)
+    gain = np.array(gain_list, dtype=np.float32)
 
     # 应用增益
     if audio.ndim == 2:
@@ -232,6 +253,7 @@ def compress_dynamic_range(
 # --------------------------------------------------------------------------
 # 统一预处理入口
 # --------------------------------------------------------------------------
+
 
 def preprocess(
     audio: NpAudioData | NpAudioSamples,

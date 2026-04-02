@@ -11,7 +11,7 @@ from typing_extensions import override
 from karakara.typ import NpAudioData, NpAudioSamples
 from karakara.utils.io import ndarray2tensor, tensor2ndarray
 
-from ..abc import StemSeparator
+from ..abc import AbstractStemSeparator
 
 DEFAULT_REPO = Path("models/sep/Demucs_Models/v3_v4_repo")
 DEFAULT_MODEL = "htdemucs_6s"
@@ -40,7 +40,7 @@ def _get_demucs_separator(
     return sep
 
 
-class DemucsSeparator(StemSeparator):
+class DemucsSeparator(AbstractStemSeparator):
     """基于 Meta Demucs 的音轨分离器。"""
 
     VOCAL_STEM_NAME = "vocals"

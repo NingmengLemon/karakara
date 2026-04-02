@@ -10,9 +10,9 @@ from numpy.typing import NDArray
 from karakara.aligner.abc import AbstractAligner
 from karakara.debug import AudioDumper
 from karakara.preprocess import AudioPreprocessConfig
+from karakara.separator.abc import AbstractStemSeparator
 from karakara.spl_parser import Lyrics, LyricWord
-from karakara.stem_separator import get_vocal_stem
-from karakara.utils.io import ms2sample
+from karakara.utils.io import load_audio, ms2sample
 from karakara.utils.lang import detect_lang
 from karakara.utils.metadata import is_metadataline
 
@@ -26,6 +26,7 @@ def gen_kara(
     lyrics: Lyrics,
     audio: str | Path,
     aligner: AbstractAligner,
+    separator: AbstractStemSeparator,
     *,
     target_lang: Literal["en", "ja", "zh"] | None = None,
     preprocess_config: AudioPreprocessConfig | None = None,
@@ -50,7 +51,11 @@ def gen_kara(
     dumper = AudioDumper(dump_dir)
 
     # ---------- 加载 & 分离人声 ----------
-    vocal_stem, sample_rate = get_vocal_stem(audio)
+    sample_rate = separator.samplerate
+    audio_np = load_audio(audio, sample_rate=sample_rate)
+    dumper.dump("00_input", audio_np, sample_rate)
+    stems = separator.separate(audio_np)
+    vocal_stem = stems[separator.VOCAL_STEM_NAME]
     dumper.dump("01_vocal_stem", vocal_stem, sample_rate)
 
     # ---------- 音频预处理 ----------
@@ -117,10 +122,11 @@ def gen_kara(
                 end = ms2sample(next_line.start, sample_rate)
 
         logger.info(f"aligning line {idx}: sample_point[{start}, {end}] {text!r}")
-        if start and end and start > end:
+        if end is not None and start > end:
             continue
 
         audio_piece = vocal_np[start:end] if end else vocal_np[start:]
+        dumper.dump(f"05_line_{idx}", audio_piece, sample_rate)
         words = aligner.align(audio_piece, text, sample_rate)
 
         # 组装逐字 LyricWord
@@ -153,14 +159,16 @@ def gen_kara(
             )
             iidx = next_idx + len(word.word)
 
-        # 尾部剩余文本
-        words_kara.append(
-            LyricWord(
-                start=words_kara[-1].end if words_kara else None,
-                end=None,
-                content=text[iidx:],
+        # 尾部剩余文本（仅在有内容时添加）
+        tail = text[iidx:]
+        if tail:
+            words_kara.append(
+                LyricWord(
+                    start=words_kara[-1].end if words_kara else None,
+                    end=None,
+                    content=tail,
+                )
             )
-        )
 
         line.content = words_kara
 
