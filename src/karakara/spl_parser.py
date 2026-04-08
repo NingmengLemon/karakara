@@ -79,7 +79,7 @@ compile_regex(
     (?:
         \[
             \s*
-            (?P<key>[a-zA-Z]{2,16})
+            (?P<key>[a-zA-Z#]{2,16}) # #是注释, 参见 https://en.wikipedia.org/wiki/LRC_(file_format)
             \s*
             :
             \s*
@@ -414,6 +414,7 @@ def construct_line(
     line: BasicLyricLine,
     use_bracket_for_byword_tag: bool = False,
     line_start: int | None = None,
+    offset: int = 0,
 ) -> str:
     result = ""
     for idx, word in enumerate(line):
@@ -421,17 +422,45 @@ def construct_line(
         suffix = (
             ""
             if word.end is None
-            else ms2tag(word.end, byword=not use_bracket_for_byword_tag)
+            else ms2tag(word.end - offset, byword=not use_bracket_for_byword_tag)
         )
         if word.start is not None:
             if idx == 0:
                 if word.start != line_start:
-                    prefix = ms2tag(word.start, byword=not use_bracket_for_byword_tag)
+                    prefix = ms2tag(
+                        word.start - offset,
+                        byword=not use_bracket_for_byword_tag,
+                    )
             elif line[idx - 1].end != word.start:
-                prefix = ms2tag(word.start, byword=not use_bracket_for_byword_tag)
+                prefix = ms2tag(
+                    word.start - offset,
+                    byword=not use_bracket_for_byword_tag,
+                )
         result += f"{prefix}{word.content}{suffix}"
 
     return result
+
+
+def _collect_all_times(lyrics: Lyrics) -> list[int]:
+    """收集整部歌词中出现的所有时间戳 (包括行首/行尾, 字首/字尾, 以及参照行中的字首/字尾)."""
+    all_times: list[int] = []
+    for line in lyrics.lines:
+        if line.start is not None:
+            all_times.append(line.start)
+        if line.end is not None:
+            all_times.append(line.end)
+        for word in line.content:
+            if word.start is not None:
+                all_times.append(word.start)
+            if word.end is not None:
+                all_times.append(word.end)
+        for refline in line.reference_lines:
+            for word in refline:
+                if word.start is not None:
+                    all_times.append(word.start)
+                if word.end is not None:
+                    all_times.append(word.end)
+    return all_times
 
 
 def construct_lrc(
@@ -439,11 +468,46 @@ def construct_lrc(
     *,
     with_metadata: bool = True,
     use_bracket_for_byword_tag: bool = False,
+    apply_offset_from_metadata: bool = False,
 ) -> str:
     buffer = StringIO()
 
+    # 注意这里不能直接修改 lyrics.metadata (会污染上层传入的对象), 而是用副本
+    metadata = dict(lyrics.metadata)
+
+    offset = 0
+    if apply_offset_from_metadata and (offset_str := metadata.pop("offset", None)):
+        try:
+            offset = int(offset_str)
+            logger.info(f"应用全局时间偏移: {offset}ms (来自 metadata.offset)")
+        except ValueError:
+            logger.warning(
+                f"无法解析 metadata.offset 的值为整数, 因此忽略这个偏移: {offset_str!r}"
+            )
+            offset = 0
+
+    # 应用 offset 的语义 (LRC 规范):
+    #   正 offset 让歌词提前显示, 即 实际显示时间 = 标签时间 - offset
+    # 当 offset > 0 时, 可能导致部分时间标签变为负数 (尤其是文件中最早的那个).
+    # 此时我们只将 offset 中"能安全应用"的那部分吃掉 (即 min_time), 剩余的部分
+    # 继续保留在 metadata.offset 里交由播放器处理, 从而保证生成的 LRC 内部所有
+    # 时间标签 >= 0.
+    if offset > 0:
+        all_times = _collect_all_times(lyrics)
+        if all_times:
+            min_time = min(all_times)
+            if min_time - offset < 0:
+                remaining_offset = offset - min_time
+                logger.warning(
+                    f"应用 offset={offset}ms 会使最小时间标签 {min_time}ms 变为负数, "
+                    f"仅应用 {min_time}ms, 剩余 {remaining_offset}ms 保留在 metadata.offset 中"
+                )
+                offset = min_time
+                # 即使 with_metadata=False 也写回, 因为这是保证语义正确所必需的信息
+                metadata["offset"] = str(remaining_offset)
+
     if with_metadata:
-        for mk, mv in lyrics.metadata.items():
+        for mk, mv in metadata.items():
             buffer.write(f"[{mk}: {mv}]\n")
 
     for line_idx, line in enumerate(lyrics.lines):
@@ -453,21 +517,22 @@ def construct_lrc(
         if line_start is None:
             logger.warning(f"未知的行起始时间: {line}")
             continue
-        buffer.write(ms2tag(line_start))
+        buffer.write(ms2tag(line_start - offset))
         buffer.write(
             construct_line(
                 line.content,
                 use_bracket_for_byword_tag=use_bracket_for_byword_tag,
                 line_start=line_start,
+                offset=offset,
             )
         )
         if line.end is not None:
-            buffer.write(ms2tag(line.end))
+            buffer.write(ms2tag(line.end - offset))
         buffer.write("\n")
 
         for refline in line.reference_lines:
-            buffer.write(ms2tag(line_start))
-            buffer.write(construct_line(refline, line_start=line_start))
+            buffer.write(ms2tag(line_start - offset))
+            buffer.write(construct_line(refline, line_start=line_start, offset=offset))
             buffer.write("\n")
 
     return buffer.getvalue()
