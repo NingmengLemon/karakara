@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from logging import getLogger
 from pathlib import Path
 from typing import Literal
 
 import numpy as np
+from lemony_lrc_parser import Lyrics, LyricWord
 from numpy.typing import NDArray
 
 from karakara.aligner.abc import AbstractAligner
@@ -16,7 +18,6 @@ from karakara.preprocess import (
     suppress_vibrato,
 )
 from karakara.separator.abc import AbstractStemSeparator
-from karakara.spl_parser import Lyrics, LyricWord
 from karakara.utils.io import load_audio, ms2sample
 from karakara.utils.lang import detect_lang
 from karakara.utils.metadata import is_metadataline
@@ -50,7 +51,7 @@ def gen_kara(
     Returns:
         词级歌词的 Lyrics 对象（content 中每个 LyricWord 带有 start/end）
     """
-    lyrics = lyrics.model_copy(deep=True)
+    lyrics = deepcopy(lyrics)
     dumper = AudioDumper(dump_dir)
 
     # ---------- 加载 & 分离人声 ----------

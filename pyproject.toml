@@ -10,6 +10,7 @@ dependencies = [
     "eval-type-backport>=0.3.0",
     # "faster-whisper>=1.2.1",
     # "funasr>=1.2.7",
+    "lemony-lrc-parser>=0.2.1",
     "numpy<2",
     # "openai-whisper>=20250625",
     # "phonemizer>=3.3.0",

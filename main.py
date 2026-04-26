@@ -2,12 +2,13 @@ from os import PathLike
 from pathlib import Path
 from typing import Literal
 
+from lemony_lrc_parser import Lyrics
+
 from karakara.aligner import Qwen3ForcedAligner
 from karakara.core import gen_kara
 from karakara.logging import setup_logging
 from karakara.preprocess import AudioPreprocessConfig
 from karakara.separator.demucs import DemucsSeparator
-from karakara.spl_parser import Lyrics
 
 
 def ask_for_input_file(type_: Literal["lyrics", "audio"]) -> str:
