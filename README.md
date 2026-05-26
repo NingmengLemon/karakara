@@ -18,7 +18,7 @@
 
 > 已知一首歌的音频文件和行级别精度的歌词文件, 能否用程序做出词级别精度的歌词文件呢...?
 
-唯一花了心思的部分是一个简陋的lrc歌词解析器: [spl_parser](src/karakara/spl_parser.py), 参考 [SPL 歌词格式](https://moriafly.com/standards/spl.html) (2025-11-14 版) ~~, 但其实并没有严格遵循~~
+唯一花了心思的部分是一个简陋的lrc歌词解析器: [lemony-lrc-parser](https://github.com/NingmengLemon/lemony-lrc-parser), 参考 [SPL 歌词格式](https://moriafly.com/standards/spl.html) (2025-11-14 版) ~~, 但其实并没有严格遵循~~
 
 位于 [samples/](samples/) 下的样本文件们的版权归其各自的原始创作者们所有
 
