@@ -87,10 +87,9 @@ def main() -> None:
     with open(save_as, "w+") as fp:
         fp.write(
             lyrics.dumps(
-                # use_bracket_for_byword_tag=True,
-                # compatible with foobar2000
                 options=SerializationOptions(
-                    use_bracket_for_byword_tag=False,
+                    use_bracket_for_byword_tag=True,
+                    # compatible with foobar2000
                     line_tag_decimal_length=3,
                     word_tag_decimal_length=3,
                 )
