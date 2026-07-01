@@ -2,7 +2,7 @@ from os import PathLike
 from pathlib import Path
 from typing import Literal
 
-from lemony_lrc_parser import Lyrics
+from lemony_lrc_parser import Lyrics, SerializationOptions
 
 from karakara.aligner import Qwen3ForcedAligner
 from karakara.core import gen_kara
@@ -87,8 +87,13 @@ def main() -> None:
     with open(save_as, "w+") as fp:
         fp.write(
             lyrics.dumps(
-                use_bracket_for_byword_tag=True,
+                # use_bracket_for_byword_tag=True,
                 # compatible with foobar2000
+                options=SerializationOptions(
+                    use_bracket_for_byword_tag=False,
+                    line_tag_decimal_length=3,
+                    word_tag_decimal_length=3,
+                )
             )
         )
 

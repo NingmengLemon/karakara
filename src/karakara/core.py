@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Literal
 
 import numpy as np
-from lemony_lrc_parser import Lyrics, LyricWord
+from lemony_lrc_parser import Lyrics, LyricToken
 from numpy.typing import NDArray
 
 from karakara.aligner.abc import AbstractAligner
@@ -37,7 +37,7 @@ def gen_kara(
 ) -> Lyrics:
     """根据音频和行级歌词生成词级逐字歌词。
 
-    流水线：加载音频 → 人声分离 → 音频预处理 → 按行对齐 → 替换 LyricWord。
+    流水线：加载音频 → 人声分离 → 音频预处理 → 按行对齐 → 替换 LyricToken。
 
     Args:
         lyrics: 已解析的 Lyrics 对象（行级歌词）
@@ -49,7 +49,7 @@ def gen_kara(
         dump_dir: 调试音频导出目录，None 时不导出
 
     Returns:
-        词级歌词的 Lyrics 对象（content 中每个 LyricWord 带有 start/end）
+        词级歌词的 Lyrics 对象（content 中每个 LyricToken 带有 start/end）
     """
     lyrics = deepcopy(lyrics)
     dumper = AudioDumper(dump_dir)
@@ -127,8 +127,8 @@ def gen_kara(
         dumper.dump(f"05_line_{idx}", audio_piece, sample_rate)
         words = aligner.align(audio_piece, text, sample_rate)
 
-        # 组装逐字 LyricWord
-        words_kara: list[LyricWord] = []
+        # 组装逐字 LyricToken
+        words_kara: list[LyricToken] = []
         iidx = 0
         for word in words:
             if not (pos := word.position):
@@ -147,7 +147,7 @@ def gen_kara(
             if next_idx > iidx:
                 # 补上前一个单词和当前单词间的空隙
                 words_kara.append(
-                    LyricWord(
+                    LyricToken(
                         start=words_kara[-1].end if words_kara else None,
                         end=pos[0] + (line.start or 0),
                         content=text[iidx:next_idx],
@@ -155,7 +155,7 @@ def gen_kara(
                 )
 
             words_kara.append(
-                LyricWord(
+                LyricToken(
                     start=pos[0] + (line.start or 0),
                     end=pos[1] + (line.start or 0),
                     content=word.word,
@@ -167,7 +167,7 @@ def gen_kara(
         tail = text[iidx:]
         if tail:
             words_kara.append(
-                LyricWord(
+                LyricToken(
                     start=words_kara[-1].end if words_kara else None,
                     end=None,
                     content=tail,
