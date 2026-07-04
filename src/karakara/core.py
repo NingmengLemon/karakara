@@ -178,6 +178,7 @@ def gen_kara(
         if words_kara and words_kara[-1].end is not None:
             line.end = words_kara[-1].end
             words_kara[-1].end = None
-        line.content = words_kara
+        line.content.clear()
+        line.content.extend(words_kara)
 
     return lyrics
