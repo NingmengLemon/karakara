@@ -6,10 +6,10 @@ from pathlib import Path
 from typing import Literal
 
 import numpy as np
-from lemony_lrc_parser import Lyrics, LyricToken
+from lemony_lrc_parser import BasicLyricLine, LyricLine, Lyrics, LyricToken
 from numpy.typing import NDArray
 
-from karakara.aligner.abc import AbstractAligner
+from karakara.aligner.abc import AbstractAligner, AlignedWord
 from karakara.debug import AudioDumper
 from karakara.preprocess import (
     AudioPreprocessConfig,
@@ -92,8 +92,12 @@ def gen_kara(
         )
         dumper.dump("04_compressed", vocal_np, sample_rate)
 
+    total_samples = vocal_np.shape[1] if vocal_np.ndim > 1 else vocal_np.shape[0]
+    logger.info(f"Total samples: {total_samples}")
+    result = Lyrics(metadata=lyrics.metadata)
+
     # ---------- 逐行对齐 ----------
-    for idx, line in enumerate(lyrics.lines):
+    for idx, line in enumerate(lyrics):
         # 语言过滤
         text = ""
         if len(line.content) == 1 and (text := line.content[0].content):
@@ -113,19 +117,29 @@ def gen_kara(
         # 确定音频片段边界
         start = ms2sample(line.start or 0, sample_rate)
         end: int | None = None
-        if idx < len(lyrics.lines) - 1:
+        if idx < len(lyrics) - 1:
             if line.end is not None:
                 end = ms2sample(line.end, sample_rate)
-            elif (next_line := lyrics.lines[idx + 1]).start is not None:
+            elif (next_line := lyrics[idx + 1]).start is not None:
                 end = ms2sample(next_line.start, sample_rate)
 
         logger.info(f"aligning line {idx}: sample_point[{start}, {end}] {text!r}")
         if end is not None and start > end:
             continue
+        if (end is not None and end >= total_samples) or (start >= total_samples):
+            logger.warning(
+                f"Line {idx}: audio segment out of bounds: [{start}, {end}] "
+                f"(total samples: {total_samples}), ignoring"
+            )
+            continue
 
         audio_piece = vocal_np[start:end] if end is not None else vocal_np[start:]
         dumper.dump(f"05_line_{idx}", audio_piece, sample_rate)
-        words = aligner.align(audio_piece, text, sample_rate)
+        try:
+            words: list[AlignedWord] = aligner.align(audio_piece, text, sample_rate)
+        except Exception as e:
+            logger.error(f"Error occurred while aligning line {idx}: {e}")
+            words = [AlignedWord(word=text, position=None)]
 
         # 组装逐字 LyricToken
         words_kara: list[LyricToken] = []
@@ -174,11 +188,12 @@ def gen_kara(
                 )
             )
 
-        # 因为先前是 model_copy(deep=True), 所以这里直接修改没有问题
+        new_line = LyricLine(
+            start=line.start, end=line.end, content=BasicLyricLine(words_kara)
+        )
         if words_kara and words_kara[-1].end is not None:
-            line.end = words_kara[-1].end
-            words_kara[-1].end = None
-        line.content.clear()
-        line.content.extend(words_kara)
+            new_line.end = words_kara[-1].end
+            new_line.content[-1].end = None
+        result.append(new_line)
 
-    return lyrics
+    return result
