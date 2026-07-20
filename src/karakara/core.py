@@ -189,7 +189,10 @@ def gen_kara(
             )
 
         new_line = LyricLine(
-            start=line.start, end=line.end, content=BasicLyricLine(words_kara)
+            start=line.start,
+            end=line.end,
+            content=BasicLyricLine(words_kara),
+            reference_lines=line.reference_lines,
         )
         if words_kara and words_kara[-1].end is not None:
             new_line.end = words_kara[-1].end
