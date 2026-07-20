@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import argparse
 from os import PathLike
 from pathlib import Path
 from typing import Literal
@@ -51,40 +54,118 @@ def ask_for_output_path(default_file: PathLike) -> str:
     return file_path
 
 
-def main() -> None:
-    setup_logging()
-
-    lyrics_src = input("lyrics:").strip() or ask_for_input_file("lyrics")
-    print("lrc src:", lyrics_src)
-    with open(lyrics_src, "r") as fp:
-        lyrics = Lyrics.loads(fp.read())
-
-    audio_src = input("audio file:").strip() or ask_for_input_file("audio")
-    print("audio src:", audio_src)
-
-    preprocess_cfg = AudioPreprocessConfig(
-        normalize=True,
-        suppress_vibrato=True,
-        compress=False,
+def build_parser() -> argparse.ArgumentParser:
+    """构建命令行参数解析器。"""
+    parser = argparse.ArgumentParser(
+        description="Karaoke lyrics alignment tool — 根据音频和行级 LRC 歌词生成词级逐字歌词",
+    )
+    # --- 文件 I/O ---
+    parser.add_argument(
+        "--lyrics",
+        "-l",
+        help="LRC 歌词文件路径（未提供时进入交互模式）",
+    )
+    parser.add_argument(
+        "--audio",
+        "-a",
+        help="音频文件路径（支持 wav/mp3/flac/m4a；未提供时进入交互模式）",
+    )
+    parser.add_argument(
+        "--output",
+        "-o",
+        help="输出 .lrc 文件路径（默认为输入歌词同目录下的 .kara.lrc）",
     )
 
-    # 传 dump_dir 以保存各阶段中间音频，方便调试；置 None 则不保存
-    dump_dir = input("dump dir (blank=skip):").strip() or None
+    # --- 调试 ---
+    parser.add_argument(
+        "--dump-dir",
+        "-d",
+        default=None,
+        help="调试音频导出目录（不指定则不导出中间结果）",
+    )
 
+    # --- 对齐器配置 ---
+    parser.add_argument(
+        "--aligner-url",
+        default="http://localhost:8787",
+        help="Qwen3ForcedAligner 服务地址（默认: http://localhost:8787）",
+    )
+
+    # --- 预处理开关 ---
+    parser.add_argument(
+        "--no-normalize",
+        action="store_true",
+        help="禁用响度归一化",
+    )
+    parser.add_argument(
+        "--no-vibrato-suppress",
+        action="store_true",
+        help="禁用颤音抑制",
+    )
+    parser.add_argument(
+        "--compress",
+        action="store_true",
+        help="启用动态范围压缩（默认关闭）",
+    )
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> None:
+    """入口：解析命令行参数并运行 Karaoke 对齐流水线。
+
+    命令行参数优先；未通过 CLI 提供的必选参数将回退到交互式输入。
+    """
+    setup_logging()
+
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    # -------- 歌词文件 --------
+    lyrics_src: str = args.lyrics or ""
+    if not lyrics_src:
+        lyrics_src = input("lyrics: ").strip() or ask_for_input_file("lyrics")
+    print("lrc src:", lyrics_src)
+    with open(lyrics_src, "r", encoding="utf-8") as fp:
+        lyrics = Lyrics.loads(fp.read())
+
+    # -------- 音频文件 --------
+    audio_src: str = args.audio or ""
+    if not audio_src:
+        audio_src = input("audio file: ").strip() or ask_for_input_file("audio")
+    print("audio src:", audio_src)
+
+    # -------- 预处理配置 --------
+    preprocess_cfg = AudioPreprocessConfig(
+        normalize=not args.no_normalize,
+        suppress_vibrato=not args.no_vibrato_suppress,
+        compress=args.compress,
+    )
+
+    # -------- dump 目录 --------
+    dump_dir = args.dump_dir or input("dump dir (blank=skip): ").strip() or None
+
+    # -------- 执行流水线 --------
     lyrics = gen_kara(
         lyrics,
         audio_src,
-        aligner=Qwen3ForcedAligner(),
+        aligner=Qwen3ForcedAligner(base_url=args.aligner_url),
         separator=DemucsSeparator(),
         preprocess_config=preprocess_cfg,
         dump_dir=dump_dir,
     )
 
-    save_as = input("output:") or ask_for_output_path(
-        Path(lyrics_src).with_suffix(".kara.lrc")
-    )
+    # -------- 输出路径 --------
+    save_as: str = args.output or ""
+    if not save_as:
+        save_as = input("output: ").strip() or ask_for_output_path(
+            Path(lyrics_src).with_suffix(".kara.lrc")
+        )
+    if not save_as:
+        print("No output file specified. Exiting...")
+        return
     print("saving as:", save_as)
-    with open(save_as, "w+") as fp:
+    with open(save_as, "w+", encoding="utf-8") as fp:
         fp.write(
             lyrics.dumps(
                 options=SerializationOptions(
