@@ -1,0 +1,48 @@
+# metadata_filter.toml
+#
+# 元数据行过滤配置文件。
+# 所有默认值在此文件中显式定义，无隐式回退。
+#
+# [enabled]   — 各检测策略的开关
+# [keywords]  — 关键字匹配（"作词: xxx" 等）
+# [id3_tags]  — ID3 风格标签（"[ti:...]" 等）
+# [parenthetical] — 括号段落标记（"(间奏)" 等）
+# [custom]    — 自定义正则表达式
+
+[enabled]
+keywords = true
+id3_tags = false
+parenthetical = false
+pure_numbers = false
+
+# ---- 关键字匹配（「关键字: 值」格式） ----
+[keywords]
+items = [
+    "作词", "作曲", "编曲", "演唱", "专辑", "歌手",
+    "制作人", "和声", "混音", "录音", "监制", "策划",
+    "封面设计", "文案", "出品",
+    "OP", "SP", "翻译", "PV", "母带", "调教", "调校",
+    "曲绘", "原曲", "編曲", "作詞", "唄", "呗",
+]
+
+# ---- ID3 风格标签（[tag: value] 格式） ----
+[id3_tags]
+tags = ["ti", "ar", "al", "by", "re", "ve", "offset", "length", "tool"]
+
+# ---- 括号段落标记（(标记) 格式，要求整行匹配） ----
+[parenthetical]
+markers = [
+    # 中文
+    "前奏", "间奏", "尾奏", "副歌", "主歌", "过渡", "桥段",
+    "前奏曲", "间奏曲",
+    # 英文
+    "Prelude", "Interlude", "Outro", "Intro", "Chorus",
+    "Verse", "Bridge", "Instrumental", "Ending", "Solo",
+    "Opening", "Break", "Refrain",
+    # 日文
+    "イントロ", "アウトロ", "間奏",
+]
+
+# ---- 自定义正则（每项为完整的正则表达式字符串） ----
+[custom]
+patterns = []

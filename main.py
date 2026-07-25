@@ -9,6 +9,7 @@ from lemony_lrc_parser import Lyrics, SerializationOptions
 
 from karakara.aligner import Qwen3ForcedAligner
 from karakara.core import gen_kara
+from karakara.utils.metadata import MetadataFilter
 from karakara.logging import setup_logging
 from karakara.preprocess import AudioPreprocessConfig
 from karakara.separator.demucs import DemucsSeparator
@@ -166,12 +167,16 @@ def main(argv: list[str] | None = None) -> None:
     else:
         offset_ms = None  # 自动估计
 
+    # -------- 加载元数据过滤器 --------
+    metadata_filter = MetadataFilter.from_file("metadata_filter.toml")
+
     # -------- 执行流水线 --------
     lyrics = gen_kara(
         lyrics,
         audio_src,
         aligner=Qwen3ForcedAligner(base_url=args.aligner_url),
         separator=DemucsSeparator(),
+        metadata_filter=metadata_filter,
         preprocess_config=preprocess_cfg,
         dump_dir=dump_dir,
         offset_ms=offset_ms,

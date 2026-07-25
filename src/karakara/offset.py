@@ -17,7 +17,7 @@ import numpy as np
 from lemony_lrc_parser import Lyrics
 from numpy.typing import NDArray
 
-from karakara.utils.metadata import is_metadataline
+from karakara.utils.metadata import MetadataFilter
 
 logger = getLogger(__name__)
 
@@ -65,6 +65,8 @@ def _build_lrc_presence_curve(
     lyrics: Lyrics,
     n_windows: int,
     total_duration_ms: float,
+    *,
+    metadata_filter: MetadataFilter,
     window_ms: float = 50.0,
 ) -> NDArray[np.float32]:
     """构建 LRC 时间戳「人声指示」曲线。
@@ -91,7 +93,7 @@ def _build_lrc_presence_curve(
         text = ""
         if len(line.content) == 1:
             text = line.content[0].content
-        if is_metadataline(text):
+        if metadata_filter(text):
             continue
 
         start_ms = line.start
@@ -142,6 +144,7 @@ def estimate_offset(
     lyrics: Lyrics,
     sample_rate: int,
     *,
+    metadata_filter: MetadataFilter,
     window_ms: float = 50.0,
     max_offset_s: float = 30.0,
     coarse_step_ms: float = 200.0,
@@ -156,6 +159,7 @@ def estimate_offset(
         audio: 人声分离后的音频，shape (channels, samples) 或 (samples,)
         lyrics: 已解析的 LRC 歌词
         sample_rate: 采样率 (Hz)
+        metadata_filter: 元数据行过滤器。
         window_ms: 能量计算与精搜索窗口 (ms)，默认 50ms
         max_offset_s: 最大搜索偏移范围 (秒)，默认 ±30s
         coarse_step_ms: 粗搜索步长 (ms)，默认 200ms
@@ -176,7 +180,11 @@ def estimate_offset(
 
     total_duration_ms = (audio.shape[-1] / sample_rate) * 1000
     presence = _build_lrc_presence_curve(
-        lyrics, n_windows, total_duration_ms, window_ms
+        lyrics,
+        n_windows,
+        total_duration_ms,
+        metadata_filter=metadata_filter,
+        window_ms=window_ms,
     )
 
     if presence.sum() < 1:

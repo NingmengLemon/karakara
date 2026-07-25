@@ -22,7 +22,7 @@ from karakara.preprocess import (
 from karakara.separator.abc import AbstractStemSeparator
 from karakara.utils.io import load_audio, ms2sample
 from karakara.utils.lang import detect_lang
-from karakara.utils.metadata import is_metadataline
+from karakara.utils.metadata import MetadataFilter
 
 logger = getLogger(__name__)
 
@@ -33,6 +33,7 @@ def gen_kara(
     aligner: AbstractAligner,
     separator: AbstractStemSeparator,
     *,
+    metadata_filter: MetadataFilter,
     target_lang: Literal["en", "ja", "zh"] | None = None,
     preprocess_config: AudioPreprocessConfig | None = None,
     dump_dir: str | Path | None = None,
@@ -47,6 +48,7 @@ def gen_kara(
         audio: 音频文件路径
         aligner: 对齐器实例
         separator: 人声分离器实例
+        metadata_filter: 元数据行过滤器，用于跳过作词/作曲等非歌词行。
         target_lang: 目标处理语言，None 时处理所有检测到的语言
         preprocess_config: 音频预处理配置，None 时使用默认值
         dump_dir: 调试音频导出目录，None 时不导出
@@ -104,7 +106,9 @@ def gen_kara(
 
     # ---------- 偏移估计 ----------
     if offset_ms is None:
-        offset_ms = estimate_offset(vocal_np, lyrics, sample_rate)
+        offset_ms = estimate_offset(
+            vocal_np, lyrics, sample_rate, metadata_filter=metadata_filter
+        )
 
     if offset_ms != 0:
         apply_delta(lyrics, int(offset_ms))
@@ -134,7 +138,7 @@ def gen_kara(
                 )
                 result.append(deepcopy(line))
                 continue
-            if is_metadataline(text):
+            if metadata_filter(text):
                 logger.info(f"skip metadata line {idx}: {text!r}")
                 result.append(deepcopy(line))
                 continue
