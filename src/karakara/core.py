@@ -7,10 +7,12 @@ from typing import Literal
 
 import numpy as np
 from lemony_lrc_parser import BasicLyricLine, LyricLine, Lyrics, LyricToken
+from lemony_lrc_parser.offset import apply_delta, iter_all_timestamps
 from numpy.typing import NDArray
 
 from karakara.aligner.abc import AbstractAligner, AlignedWord
 from karakara.debug import AudioDumper
+from karakara.offset import estimate_offset
 from karakara.preprocess import (
     AudioPreprocessConfig,
     compress_dynamic_range,
@@ -34,10 +36,11 @@ def gen_kara(
     target_lang: Literal["en", "ja", "zh"] | None = None,
     preprocess_config: AudioPreprocessConfig | None = None,
     dump_dir: str | Path | None = None,
+    offset_ms: float | None = None,
 ) -> Lyrics:
     """根据音频和行级歌词生成词级逐字歌词。
 
-    流水线：加载音频 → 人声分离 → 音频预处理 → 按行对齐 → 替换 LyricToken。
+    流水线：加载音频 → 人声分离 → 音频预处理 → 偏移估计 → 按行对齐 → 替换 LyricToken。
 
     Args:
         lyrics: 已解析的 Lyrics 对象（行级歌词）
@@ -47,6 +50,10 @@ def gen_kara(
         target_lang: 目标处理语言，None 时处理所有检测到的语言
         preprocess_config: 音频预处理配置，None 时使用默认值
         dump_dir: 调试音频导出目录，None 时不导出
+        offset_ms: 全局时间偏移 (ms)。
+            * 正值：LRC 偏早，延迟 LRC 后再切音频
+            * 负值：LRC 偏晚，提前 LRC 后再切音频
+            * None：自动估计偏移量
 
     Returns:
         词级歌词的 Lyrics 对象（content 中每个 LyricToken 带有 start/end）
@@ -94,9 +101,28 @@ def gen_kara(
 
     total_samples = vocal_np.shape[1] if vocal_np.ndim > 1 else vocal_np.shape[0]
     logger.info(f"Total samples: {total_samples}")
-    result = Lyrics(metadata=lyrics.metadata)
+
+    # ---------- 偏移估计 ----------
+    if offset_ms is None:
+        offset_ms = estimate_offset(vocal_np, lyrics, sample_rate)
+
+    if offset_ms != 0:
+        apply_delta(lyrics, int(offset_ms))
+        logger.info(f"Applied global offset: {offset_ms:+.0f}ms")
+
+        # 偏移可能导致负时间戳——找出最小时间戳，
+        # 若为负则整体再平移，使最小值为 0，保持相对时序不变
+        min_ts = min(iter_all_timestamps(lyrics), default=0)
+        if min_ts < 0:
+            apply_delta(lyrics, -min_ts)
+            offset_ms += -min_ts
+            logger.info(
+                f"Shifted by {-min_ts}ms to avoid negative timestamps "
+                f"(final offset={offset_ms:+.0f}ms)"
+            )
 
     # ---------- 逐行对齐 ----------
+    result = Lyrics(metadata=lyrics.metadata)
     for idx, line in enumerate(lyrics):
         # 语言过滤
         text = ""
@@ -106,22 +132,25 @@ def gen_kara(
                 logger.debug(
                     f"skip line {idx}: lang={lang!r} != target={target_lang!r}"
                 )
+                result.append(deepcopy(line))
                 continue
             if is_metadataline(text):
                 logger.info(f"skip metadata line {idx}: {text!r}")
+                result.append(deepcopy(line))
                 continue
 
         if not text:
+            result.append(deepcopy(line))
             continue
 
-        # 确定音频片段边界
-        start = ms2sample(line.start or 0, sample_rate)
+        # 确定音频片段边界（时间戳已应用偏移）
+        start = ms2sample(max(line.start or 0, 0), sample_rate)
         end: int | None = None
-        if idx < len(lyrics) - 1:
-            if line.end is not None:
-                end = ms2sample(line.end, sample_rate)
-            elif (next_line := lyrics[idx + 1]).start is not None:
-                end = ms2sample(next_line.start, sample_rate)
+
+        if line.end is not None:
+            end = ms2sample(line.end, sample_rate)
+        elif idx < len(lyrics) - 1 and (next_line := lyrics[idx + 1]).start is not None:
+            end = ms2sample(next_line.start, sample_rate)
 
         logger.info(f"aligning line {idx}: sample_point[{start}, {end}] {text!r}")
         if end is not None and start > end:

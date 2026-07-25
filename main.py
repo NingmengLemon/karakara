@@ -84,6 +84,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="调试音频导出目录（不指定则不导出中间结果）",
     )
 
+    # --- 偏移预测 ---
+    parser.add_argument(
+        "--offset",
+        type=float,
+        default=None,
+        help="手动指定全局时间偏移（ms）。正值=LRC偏早需延迟, 负值=LRC偏晚需提前。不指定时自动估计",
+    )
+    parser.add_argument(
+        "--no-offset-estimate",
+        action="store_true",
+        help="禁用自动偏移估计（相当于 --offset 0）",
+    )
+
     # --- 对齐器配置 ---
     parser.add_argument(
         "--aligner-url",
@@ -145,6 +158,14 @@ def main(argv: list[str] | None = None) -> None:
     # -------- dump 目录 --------
     dump_dir = args.dump_dir or input("dump dir (blank=skip): ").strip() or None
 
+    # -------- 偏移参数 --------
+    if args.no_offset_estimate:
+        offset_ms: float | None = 0.0
+    elif args.offset is not None:
+        offset_ms = args.offset
+    else:
+        offset_ms = None  # 自动估计
+
     # -------- 执行流水线 --------
     lyrics = gen_kara(
         lyrics,
@@ -153,6 +174,7 @@ def main(argv: list[str] | None = None) -> None:
         separator=DemucsSeparator(),
         preprocess_config=preprocess_cfg,
         dump_dir=dump_dir,
+        offset_ms=offset_ms,
     )
 
     # -------- 输出路径 --------
