@@ -25,6 +25,10 @@ class Qwen3ForcedAligner(AbstractAligner):
         self._client = Q3FAClient(base_url=base_url, timeout=None, session=session)
         self._language = language
 
+    def close(self) -> None:
+        """关闭底层 HTTP 会话并释放连接池。"""
+        self._client.close()
+
     @override
     def align(
         self,

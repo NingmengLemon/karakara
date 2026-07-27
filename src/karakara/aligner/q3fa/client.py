@@ -63,6 +63,10 @@ class Q3FAClient:
         self.timeout = timeout
         self.session = session or requests.Session()
 
+    def close(self) -> None:
+        """关闭底层 HTTP 会话并释放连接池。"""
+        self.session.close()
+
     def health(self, timeout: float | None = None) -> dict[str, str]:
         """
         健康检查。
