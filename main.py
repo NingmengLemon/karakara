@@ -121,6 +121,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="启用动态范围压缩（默认关闭）",
     )
+    parser.add_argument(
+        "--min-vocal-activity",
+        type=float,
+        default=0.01,
+        help="低于该归一化人声活动度的行不对齐（默认: 0.01；0=关闭）",
+    )
 
     return parser
 
@@ -180,6 +186,7 @@ def main(argv: list[str] | None = None) -> None:
         preprocess_config=preprocess_cfg,
         dump_dir=dump_dir,
         offset_ms=offset_ms,
+        min_vocal_activity=args.min_vocal_activity,
     )
 
     # -------- 输出路径 --------

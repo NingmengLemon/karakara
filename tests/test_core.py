@@ -159,3 +159,56 @@ def test_passes_all_vocal_channels_to_aligner(
     assert aligner.received_audio[0].shape == (2, 15)
     np.testing.assert_array_equal(aligner.received_audio[0][1], np.ones(15, np.float32))
     assert _line_text(result) == "hello"
+
+
+def test_skips_alignment_for_silent_lyric_line(
+    monkeypatch: pytest.MonkeyPatch, metadata_filter: MetadataFilter
+) -> None:
+    monkeypatch.setattr(
+        "karakara.core.load_audio",
+        lambda _path, sample_rate: np.zeros((2, 20), np.float32),
+    )
+    separator = FakeSeparator(np.zeros((2, 20), np.float32))
+    aligner = FakeAligner(lambda _audio, text: [AlignedWord(text, (0, 100))])
+
+    result = gen_kara(
+        Lyrics.loads("[00:00.00]silent line"),
+        "ignored.wav",
+        aligner=aligner,
+        separator=separator,
+        metadata_filter=metadata_filter,
+        preprocess_config=AudioPreprocessConfig(
+            normalize=False, suppress_vibrato=False, compress=False
+        ),
+        offset_ms=0,
+        min_vocal_activity=0.01,
+    )
+
+    assert aligner.received_audio == []
+    assert _line_text(result) == "silent line"
+
+
+def test_vocal_activity_check_can_be_disabled(
+    monkeypatch: pytest.MonkeyPatch, metadata_filter: MetadataFilter
+) -> None:
+    monkeypatch.setattr(
+        "karakara.core.load_audio",
+        lambda _path, sample_rate: np.zeros((2, 20), np.float32),
+    )
+    separator = FakeSeparator(np.zeros((2, 20), np.float32))
+    aligner = FakeAligner(lambda _audio, text: [AlignedWord(text, (0, 100))])
+
+    gen_kara(
+        Lyrics.loads("[00:00.00]silent line"),
+        "ignored.wav",
+        aligner=aligner,
+        separator=separator,
+        metadata_filter=metadata_filter,
+        preprocess_config=AudioPreprocessConfig(
+            normalize=False, suppress_vibrato=False, compress=False
+        ),
+        offset_ms=0,
+        min_vocal_activity=0,
+    )
+
+    assert len(aligner.received_audio) == 1

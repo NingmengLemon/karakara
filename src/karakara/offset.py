@@ -22,7 +22,7 @@ from karakara.utils.metadata import MetadataFilter
 logger = getLogger(__name__)
 
 
-def _build_energy_curve(
+def build_energy_curve(
     audio: NDArray[np.float32],
     sample_rate: int,
     window_ms: float = 50.0,
@@ -59,6 +59,28 @@ def _build_energy_curve(
         energy = energy / e_max  # type: ignore[assignment]
 
     return energy  # type: ignore[no-any-return]
+
+
+def score_vocal_activity(
+    energy: NDArray[np.float32],
+    start_ms: float,
+    end_ms: float,
+    *,
+    window_ms: float = 50.0,
+) -> float:
+    """计算歌词时间段内的归一化人声活动度。
+
+    ``energy`` 应由 :func:`build_energy_curve` 生成。返回值为该时间段内
+    RMS 能量的均值，范围为 ``[0, 1]``；区间为空或超出音频范围时返回 ``0``。
+    """
+    if end_ms <= start_ms or energy.size == 0:
+        return 0.0
+
+    start_window = max(0, int(start_ms / window_ms))
+    end_window = min(len(energy), int(np.ceil(end_ms / window_ms)))
+    if end_window <= start_window:
+        return 0.0
+    return float(energy[start_window:end_window].mean())
 
 
 def _build_lrc_presence_curve(
@@ -171,7 +193,7 @@ def estimate_offset(
         * 0.0：无需调整或无法估计
     """
     # ---------- 构建两条曲线 ----------
-    energy = _build_energy_curve(audio, sample_rate, window_ms)
+    energy = build_energy_curve(audio, sample_rate, window_ms)
     n_windows = len(energy)
 
     if n_windows < 2:

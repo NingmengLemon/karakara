@@ -12,7 +12,7 @@ from numpy.typing import NDArray
 
 from karakara.aligner.abc import AbstractAligner, AlignedWord
 from karakara.debug import AudioDumper
-from karakara.offset import estimate_offset
+from karakara.offset import build_energy_curve, estimate_offset, score_vocal_activity
 from karakara.preprocess import (
     AudioPreprocessConfig,
     compress_dynamic_range,
@@ -38,6 +38,7 @@ def gen_kara(
     preprocess_config: AudioPreprocessConfig | None = None,
     dump_dir: str | Path | None = None,
     offset_ms: float | None = None,
+    min_vocal_activity: float = 0.01,
 ) -> Lyrics:
     """根据音频和行级歌词生成词级逐字歌词。
 
@@ -56,10 +57,15 @@ def gen_kara(
             * 正值：LRC 偏早，延迟 LRC 后再切音频
             * 负值：LRC 偏晚，提前 LRC 后再切音频
             * None：自动估计偏移量
+        min_vocal_activity: 人声活动度低于该阈值时跳过强制对齐并保留原行；
+            取 ``0`` 可关闭。活动度是相对于整首人声音频峰值归一化的 RMS 均值。
 
     Returns:
         词级歌词的 Lyrics 对象（content 中每个 LyricToken 带有 start/end）
     """
+    if min_vocal_activity < 0:
+        raise ValueError("min_vocal_activity must be non-negative")
+
     lyrics = deepcopy(lyrics)
     dumper = AudioDumper(dump_dir)
 
@@ -130,6 +136,10 @@ def gen_kara(
                 f"(final offset={offset_ms:+.0f}ms)"
             )
 
+    # 偏移校正后才计算每行活动度。该曲线不参与首次偏移估计，避免低活动度
+    # 判定和偏移校正之间形成反馈循环。
+    energy_curve = build_energy_curve(vocal_np, sample_rate)
+
     # ---------- 逐行对齐 ----------
     result = Lyrics(metadata=lyrics.metadata)
     for idx, line in enumerate(lyrics):
@@ -175,6 +185,21 @@ def gen_kara(
             )
             result.append(deepcopy(line))
             continue
+
+        segment_end = end if end is not None else total_samples
+        if min_vocal_activity > 0:
+            activity = score_vocal_activity(
+                energy_curve,
+                start_ms=start / sample_rate * 1000,
+                end_ms=segment_end / sample_rate * 1000,
+            )
+            if activity < min_vocal_activity:
+                logger.info(
+                    f"skip low vocal activity line {idx}: activity={activity:.3f} "
+                    f"< threshold={min_vocal_activity:.3f}: {text!r}"
+                )
+                result.append(deepcopy(line))
+                continue
 
         # 音频约定为 (channels, samples)；时间范围必须沿最后一维切片。
         audio_piece = vocal_np[:, start:end] if end is not None else vocal_np[:, start:]
