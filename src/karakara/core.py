@@ -75,7 +75,12 @@ def gen_kara(
     config = (
         preprocess_config if preprocess_config is not None else AudioPreprocessConfig()
     )
-    vocal_np: NDArray[np.float32] = vocal_stem[0]
+    # 分离器接口约定返回 (channels, samples)。保留全部声道而非固定取左声道。
+    vocal_np: NDArray[np.float32] = vocal_stem
+    if vocal_np.ndim != 2:
+        raise ValueError(
+            f"Vocal stem must have shape (channels, samples), got {vocal_np.shape}"
+        )
 
     if config.normalize:
         vocal_np = normalize_loudness(vocal_np, config.target_dbfs)
@@ -101,7 +106,7 @@ def gen_kara(
         )
         dumper.dump("04_compressed", vocal_np, sample_rate)
 
-    total_samples = vocal_np.shape[1] if vocal_np.ndim > 1 else vocal_np.shape[0]
+    total_samples = vocal_np.shape[-1]
     logger.info(f"Total samples: {total_samples}")
 
     # ---------- 偏移估计 ----------
@@ -158,15 +163,21 @@ def gen_kara(
 
         logger.info(f"aligning line {idx}: sample_point[{start}, {end}] {text!r}")
         if end is not None and start > end:
+            logger.warning(
+                f"Line {idx}: invalid audio segment: [{start}, {end}], preserving original"
+            )
+            result.append(deepcopy(line))
             continue
         if (end is not None and end >= total_samples) or (start >= total_samples):
             logger.warning(
                 f"Line {idx}: audio segment out of bounds: [{start}, {end}] "
-                f"(total samples: {total_samples}), ignoring"
+                f"(total samples: {total_samples}), preserving original"
             )
+            result.append(deepcopy(line))
             continue
 
-        audio_piece = vocal_np[start:end] if end is not None else vocal_np[start:]
+        # 音频约定为 (channels, samples)；时间范围必须沿最后一维切片。
+        audio_piece = vocal_np[:, start:end] if end is not None else vocal_np[:, start:]
         dumper.dump(f"05_line_{idx}", audio_piece, sample_rate)
         try:
             words: list[AlignedWord] = aligner.align(audio_piece, text, sample_rate)
@@ -220,6 +231,15 @@ def gen_kara(
                     content=tail,
                 )
             )
+
+        # 对齐服务失败、未返回位置，或返回文本无法对应原歌词时，不能以空行
+        # 覆盖原歌词；保留原始行可确保失败降级不会造成数据丢失。
+        if not words_kara:
+            logger.warning(
+                f"Line {idx}: no usable alignment result, preserving original"
+            )
+            result.append(deepcopy(line))
+            continue
 
         new_line = LyricLine(
             start=line.start,

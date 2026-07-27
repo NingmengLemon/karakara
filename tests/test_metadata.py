@@ -353,6 +353,10 @@ class TestEdgeCases:
         """关键字出现在歌词中间不应匹配。"""
         assert not _mk_filter().is_metadata("他的演唱很精彩")
 
+    def test_keyword_and_colon_in_lyric_text(self) -> None:
+        """歌词正文中的“关键字: 内容”不能被误判为元数据。"""
+        assert not _mk_filter().is_metadata("我想写下作词: 未完的故事")
+
     def test_all_default_keywords_in_list(self) -> None:
         """确保 _DEFAULT_KEYWORDS 非空且全部可被默认 filter 识别。"""
         assert len(_DEFAULT_KEYWORDS) > 0

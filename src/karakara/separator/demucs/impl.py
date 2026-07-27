@@ -119,6 +119,23 @@ class DemucsSeparator(AbstractStemSeparator):
 
         result: dict[str, NpAudioData] = {}
         for name, stem_tensor in stems.items():
-            result[name] = tensor2ndarray(stem_tensor)
+            stem_np = tensor2ndarray(stem_tensor)
+            # 不同 Demucs API 版本可能返回 (channels, samples)，也可能保留
+            # 单元素批次维并返回 (1, channels, samples)。统一适配为接口约定的
+            # (channels, samples)，但拒绝多元素批次，避免无意丢弃音频。
+            if stem_np.ndim == 3:
+                if stem_np.shape[0] != 1:
+                    raise ValueError(
+                        "Unexpected Demucs stem batch size; expected 1, "
+                        f"got {stem_np.shape} for stem {name!r}"
+                    )
+                stem_np = stem_np[0]
+            if stem_np.ndim != 2:
+                raise ValueError(
+                    "Unexpected Demucs stem shape; expected (channels, samples) "
+                    "or (1, channels, samples), "
+                    f"got {stem_np.shape} for stem {name!r}"
+                )
+            result[name] = stem_np
         logger.info(f"separation done, stems: {list(result.keys())}")
         return result

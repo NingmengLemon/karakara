@@ -136,10 +136,10 @@ class MetadataFilter:
     def _build_pattern(self) -> re.Pattern[str]:
         parts: list[str] = []
 
-        # 1) 关键字匹配：关键字 + 冒号 + 内容
+        # 1) 关键字匹配：以关键字开头，后接冒号和值
         if self._keywords:
             escaped = "|".join(re.escape(k) for k in self._keywords)
-            parts.append(rf"(?:{escaped})+\s*[：:].+")
+            parts.append(rf"^\s*(?:{escaped})\s*[：:].+")
 
         # 2) ID3 风格标签（如 [ti:标题] [ar:歌手]）
         if self._detect_id3_tags:
