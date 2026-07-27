@@ -212,3 +212,61 @@ def test_vocal_activity_check_can_be_disabled(
     )
 
     assert len(aligner.received_audio) == 1
+
+
+def test_preserves_existing_byword_line_when_configured(
+    monkeypatch: pytest.MonkeyPatch, metadata_filter: MetadataFilter
+) -> None:
+    monkeypatch.setattr(
+        "karakara.core.load_audio",
+        lambda _path, sample_rate: np.ones((2, 20), np.float32),
+    )
+    source = Lyrics.loads("[00:00.00]he[00:00.10]llo[00:00.20]")
+    separator = FakeSeparator(np.ones((2, 20), np.float32))
+    aligner = FakeAligner(lambda _audio, text: [AlignedWord(text, (0, 200))])
+
+    result = gen_kara(
+        source,
+        "ignored.wav",
+        aligner=aligner,
+        separator=separator,
+        metadata_filter=metadata_filter,
+        preprocess_config=AudioPreprocessConfig(
+            normalize=False, suppress_vibrato=False, compress=False
+        ),
+        offset_ms=0,
+        min_vocal_activity=0,
+        existing_byword_policy="preserve",
+    )
+
+    assert len(result[0].content) == 2
+    assert aligner.received_audio == []
+
+
+def test_realigns_existing_byword_line_by_default(
+    monkeypatch: pytest.MonkeyPatch, metadata_filter: MetadataFilter
+) -> None:
+    monkeypatch.setattr(
+        "karakara.core.load_audio",
+        lambda _path, sample_rate: np.ones((2, 20), np.float32),
+    )
+    source = Lyrics.loads("[00:00.00]he[00:00.10]llo[00:00.20]")
+    separator = FakeSeparator(np.ones((2, 20), np.float32))
+    aligner = FakeAligner(lambda _audio, text: [AlignedWord(text, (0, 200))])
+
+    result = gen_kara(
+        source,
+        "ignored.wav",
+        aligner=aligner,
+        separator=separator,
+        metadata_filter=metadata_filter,
+        preprocess_config=AudioPreprocessConfig(
+            normalize=False, suppress_vibrato=False, compress=False
+        ),
+        offset_ms=0,
+        min_vocal_activity=0,
+    )
+
+    assert len(aligner.received_audio) == 1
+    assert len(result[0].content) == 1
+    assert _line_text(result) == "hello"

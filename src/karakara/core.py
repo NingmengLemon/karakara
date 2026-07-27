@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-from copy import deepcopy
 from logging import getLogger
 from pathlib import Path
 from typing import Literal
 
-import numpy as np
 from lemony_lrc_parser import BasicLyricLine, LyricLine, Lyrics, LyricToken
 from lemony_lrc_parser.offset import apply_delta, iter_all_timestamps
 from numpy.typing import NDArray
@@ -26,6 +24,215 @@ from karakara.utils.metadata import MetadataFilter
 
 logger = getLogger(__name__)
 
+ExistingBywordPolicy = Literal["realign", "preserve"]
+
+
+def _preprocess_vocals(
+    audio: str | Path,
+    *,
+    separator: AbstractStemSeparator,
+    config: AudioPreprocessConfig,
+    dumper: AudioDumper,
+) -> tuple[NDArray, int]:
+    """加载音频、分离人声并应用配置的预处理步骤。"""
+    sample_rate = separator.samplerate
+    audio_np = load_audio(audio, sample_rate=sample_rate)
+    dumper.dump("00_input", audio_np, sample_rate)
+    stems = separator.separate(audio_np)
+    vocal_np: NDArray = stems[separator.VOCAL_STEM_NAME]
+    dumper.dump("01_vocal_stem", vocal_np, sample_rate)
+
+    if vocal_np.ndim != 2:
+        raise ValueError(
+            f"Vocal stem must have shape (channels, samples), got {vocal_np.shape}"
+        )
+    if config.normalize:
+        vocal_np = normalize_loudness(vocal_np, config.target_dbfs)
+        dumper.dump("02_normalized", vocal_np, sample_rate)
+    if config.suppress_vibrato:
+        vocal_np = suppress_vibrato(
+            vocal_np,
+            sample_rate,
+            threshold_hz=config.vibrato_threshold_hz,
+            smooth_window_ms=config.vibrato_smooth_window_ms,
+        )
+        dumper.dump("03_vibrato_suppressed", vocal_np, sample_rate)
+    if config.compress:
+        vocal_np = compress_dynamic_range(
+            vocal_np,
+            sample_rate,
+            threshold_dbfs=config.comp_threshold_dbfs,
+            ratio=config.comp_ratio,
+            attack_ms=config.comp_attack_ms,
+            release_ms=config.comp_release_ms,
+        )
+        dumper.dump("04_compressed", vocal_np, sample_rate)
+    return vocal_np, sample_rate
+
+
+def _apply_offset(
+    lyrics: Lyrics,
+    audio: NDArray,
+    sample_rate: int,
+    *,
+    metadata_filter: MetadataFilter,
+    offset_ms: float | None,
+) -> None:
+    """估计并就地应用全局时间偏移，必要时避免负时间戳。"""
+    applied_offset = offset_ms
+    if applied_offset is None:
+        applied_offset = estimate_offset(
+            audio, lyrics, sample_rate, metadata_filter=metadata_filter
+        )
+    if applied_offset == 0:
+        return
+
+    apply_delta(lyrics, int(applied_offset))
+    logger.info(f"Applied global offset: {applied_offset:+.0f}ms")
+    min_ts = min(iter_all_timestamps(lyrics), default=0)
+    if min_ts < 0:
+        apply_delta(lyrics, -min_ts)
+        applied_offset += -min_ts
+        logger.info(
+            f"Shifted by {-min_ts}ms to avoid negative timestamps "
+            f"(final offset={applied_offset:+.0f}ms)"
+        )
+
+
+def _is_byword_line(line: LyricLine) -> bool:
+    """判断行中是否已有词级时间标签。"""
+    return any(
+        token.start is not None or token.end is not None for token in line.content
+    )
+
+
+def _should_preserve_line(
+    line: LyricLine,
+    text: str,
+    *,
+    index: int,
+    target_lang: Literal["en", "ja", "zh"] | None,
+    metadata_filter: MetadataFilter,
+    existing_byword_policy: ExistingBywordPolicy,
+) -> bool:
+    """判断该行是否应跳过对齐并保留原样。"""
+    if not text:
+        return True
+    if existing_byword_policy == "preserve" and _is_byword_line(line):
+        logger.info(f"preserve existing byword line {index}: {text!r}")
+        return True
+    language = detect_lang(text)
+    if target_lang is not None and language != target_lang:
+        logger.debug(f"skip line {index}: lang={language!r} != target={target_lang!r}")
+        return True
+    if metadata_filter(text):
+        logger.info(f"skip metadata line {index}: {text!r}")
+        return True
+    return False
+
+
+def _line_sample_range(
+    lyrics: Lyrics,
+    index: int,
+    sample_rate: int,
+) -> tuple[int, int | None]:
+    """计算一行歌词对应的样本区间。"""
+    line = lyrics[index]
+    start = ms2sample(max(line.start, 0), sample_rate)
+    if line.end is not None:
+        return start, ms2sample(line.end, sample_rate)
+    if index < len(lyrics) - 1 and lyrics[index + 1].start is not None:
+        return start, ms2sample(lyrics[index + 1].start, sample_rate)
+    return start, None
+
+
+def _build_aligned_content(
+    text: str,
+    words: list[AlignedWord],
+    *,
+    line_start: int,
+    line_index: int,
+) -> BasicLyricLine | None:
+    """将对齐器输出映射回原始歌词文本，失败时返回 ``None``。"""
+    tokens: list[LyricToken] = []
+    text_index = 0
+    for word in words:
+        if word.position is None:
+            continue
+        next_index = text.find(word.word, text_index)
+        if next_index == -1:
+            logger.warning(
+                f"aligned word {word.word!r} not found in text "
+                f"at pos {text_index}, skipping"
+            )
+            continue
+        start, end = word.position
+        if next_index > text_index:
+            tokens.append(
+                LyricToken(
+                    start=tokens[-1].end if tokens else None,
+                    end=start + line_start,
+                    content=text[text_index:next_index],
+                )
+            )
+        logger.debug(
+            f"got aligned word: {word.word!r}, at time {word.position!r}ms "
+            f"at line {line_index} [{next_index}, {next_index + len(word.word)}]"
+        )
+        tokens.append(
+            LyricToken(
+                start=start + line_start, end=end + line_start, content=word.word
+            )
+        )
+        text_index = next_index + len(word.word)
+
+    tail = text[text_index:]
+    if tail:
+        tokens.append(
+            LyricToken(
+                start=tokens[-1].end if tokens else None,
+                end=None,
+                content=tail,
+            )
+        )
+    return BasicLyricLine(tokens) if tokens else None
+
+
+def _align_line(
+    line: LyricLine,
+    text: str,
+    *,
+    index: int,
+    audio: NDArray,
+    sample_rate: int,
+    aligner: AbstractAligner,
+    dumper: AudioDumper,
+) -> LyricLine | None:
+    """对单行执行对齐，不能可靠映射时返回 ``None``。"""
+    audio_piece = audio
+    dumper.dump(f"05_line_{index}", audio_piece, sample_rate)
+    try:
+        words = aligner.align(audio_piece, text, sample_rate)
+    except Exception as exc:
+        logger.error(f"Error occurred while aligning line {index}: {exc}")
+        return None
+
+    content = _build_aligned_content(
+        text, words, line_start=line.start, line_index=index
+    )
+    if content is None:
+        logger.warning(f"Line {index}: no usable alignment result, preserving original")
+        return None
+    end = content[-1].end if content and content[-1].end is not None else line.end
+    if content and content[-1].end is not None:
+        content[-1].end = None
+    return LyricLine(
+        start=line.start,
+        end=end,
+        content=content,
+        reference_lines=[reference.copy() for reference in line.reference_lines],
+    )
+
 
 def gen_kara(
     lyrics: Lyrics,
@@ -39,242 +246,90 @@ def gen_kara(
     dump_dir: str | Path | None = None,
     offset_ms: float | None = None,
     min_vocal_activity: float = 0.01,
+    existing_byword_policy: ExistingBywordPolicy = "realign",
 ) -> Lyrics:
     """根据音频和行级歌词生成词级逐字歌词。
 
-    流水线：加载音频 → 人声分离 → 音频预处理 → 偏移估计 → 按行对齐 → 替换 LyricToken。
-
-    Args:
-        lyrics: 已解析的 Lyrics 对象（行级歌词）
-        audio: 音频文件路径
-        aligner: 对齐器实例
-        separator: 人声分离器实例
-        metadata_filter: 元数据行过滤器，用于跳过作词/作曲等非歌词行。
-        target_lang: 目标处理语言，None 时处理所有检测到的语言
-        preprocess_config: 音频预处理配置，None 时使用默认值
-        dump_dir: 调试音频导出目录，None 时不导出
-        offset_ms: 全局时间偏移 (ms)。
-            * 正值：LRC 偏早，延迟 LRC 后再切音频
-            * 负值：LRC 偏晚，提前 LRC 后再切音频
-            * None：自动估计偏移量
-        min_vocal_activity: 人声活动度低于该阈值时跳过强制对齐并保留原行；
-            取 ``0`` 可关闭。活动度是相对于整首人声音频峰值归一化的 RMS 均值。
-
-    Returns:
-        词级歌词的 Lyrics 对象（content 中每个 LyricToken 带有 start/end）
+    已有逐字时间标签的行由 ``existing_byword_policy`` 控制：``"realign"`` 会
+    将所有 token 文本拼接后重新对齐；``"preserve"`` 则原样保留。
     """
     if min_vocal_activity < 0:
         raise ValueError("min_vocal_activity must be non-negative")
+    if existing_byword_policy not in ("realign", "preserve"):
+        raise ValueError(f"Unknown existing_byword_policy: {existing_byword_policy!r}")
 
-    lyrics = deepcopy(lyrics)
+    working_lyrics = lyrics.copy()
     dumper = AudioDumper(dump_dir)
-
-    # ---------- 加载 & 分离人声 ----------
-    sample_rate = separator.samplerate
-    audio_np = load_audio(audio, sample_rate=sample_rate)
-    dumper.dump("00_input", audio_np, sample_rate)
-    stems = separator.separate(audio_np)
-    vocal_stem = stems[separator.VOCAL_STEM_NAME]
-    dumper.dump("01_vocal_stem", vocal_stem, sample_rate)
-
-    # ---------- 音频预处理 ----------
     config = (
         preprocess_config if preprocess_config is not None else AudioPreprocessConfig()
     )
-    # 分离器接口约定返回 (channels, samples)。保留全部声道而非固定取左声道。
-    vocal_np: NDArray[np.float32] = vocal_stem
-    if vocal_np.ndim != 2:
-        raise ValueError(
-            f"Vocal stem must have shape (channels, samples), got {vocal_np.shape}"
-        )
-
-    if config.normalize:
-        vocal_np = normalize_loudness(vocal_np, config.target_dbfs)
-        dumper.dump("02_normalized", vocal_np, sample_rate)
-
-    if config.suppress_vibrato:
-        vocal_np = suppress_vibrato(
-            vocal_np,
-            sample_rate,
-            threshold_hz=config.vibrato_threshold_hz,
-            smooth_window_ms=config.vibrato_smooth_window_ms,
-        )
-        dumper.dump("03_vibrato_suppressed", vocal_np, sample_rate)
-
-    if config.compress:
-        vocal_np = compress_dynamic_range(
-            vocal_np,
-            sample_rate,
-            threshold_dbfs=config.comp_threshold_dbfs,
-            ratio=config.comp_ratio,
-            attack_ms=config.comp_attack_ms,
-            release_ms=config.comp_release_ms,
-        )
-        dumper.dump("04_compressed", vocal_np, sample_rate)
-
+    vocal_np, sample_rate = _preprocess_vocals(
+        audio, separator=separator, config=config, dumper=dumper
+    )
     total_samples = vocal_np.shape[-1]
     logger.info(f"Total samples: {total_samples}")
-
-    # ---------- 偏移估计 ----------
-    if offset_ms is None:
-        offset_ms = estimate_offset(
-            vocal_np, lyrics, sample_rate, metadata_filter=metadata_filter
-        )
-
-    if offset_ms != 0:
-        apply_delta(lyrics, int(offset_ms))
-        logger.info(f"Applied global offset: {offset_ms:+.0f}ms")
-
-        # 偏移可能导致负时间戳——找出最小时间戳，
-        # 若为负则整体再平移，使最小值为 0，保持相对时序不变
-        min_ts = min(iter_all_timestamps(lyrics), default=0)
-        if min_ts < 0:
-            apply_delta(lyrics, -min_ts)
-            offset_ms += -min_ts
-            logger.info(
-                f"Shifted by {-min_ts}ms to avoid negative timestamps "
-                f"(final offset={offset_ms:+.0f}ms)"
-            )
-
-    # 偏移校正后才计算每行活动度。该曲线不参与首次偏移估计，避免低活动度
-    # 判定和偏移校正之间形成反馈循环。
+    _apply_offset(
+        working_lyrics,
+        vocal_np,
+        sample_rate,
+        metadata_filter=metadata_filter,
+        offset_ms=offset_ms,
+    )
     energy_curve = build_energy_curve(vocal_np, sample_rate)
 
-    # ---------- 逐行对齐 ----------
-    result = Lyrics(metadata=lyrics.metadata)
-    for idx, line in enumerate(lyrics):
-        # 语言过滤
-        text = ""
-        if len(line.content) == 1 and (text := line.content[0].content):
-            lang = detect_lang(text)
-            if target_lang is not None and lang != target_lang:
-                logger.debug(
-                    f"skip line {idx}: lang={lang!r} != target={target_lang!r}"
-                )
-                result.append(deepcopy(line))
-                continue
-            if metadata_filter(text):
-                logger.info(f"skip metadata line {idx}: {text!r}")
-                result.append(deepcopy(line))
-                continue
-
-        if not text:
-            result.append(deepcopy(line))
+    result = Lyrics(metadata=working_lyrics.metadata)
+    for index, line in enumerate(working_lyrics):
+        text = line.text
+        if _should_preserve_line(
+            line,
+            text,
+            index=index,
+            target_lang=target_lang,
+            metadata_filter=metadata_filter,
+            existing_byword_policy=existing_byword_policy,
+        ):
+            result.append(line.copy())
             continue
 
-        # 确定音频片段边界（时间戳已应用偏移）
-        start = ms2sample(max(line.start or 0, 0), sample_rate)
-        end: int | None = None
-
-        if line.end is not None:
-            end = ms2sample(line.end, sample_rate)
-        elif idx < len(lyrics) - 1 and (next_line := lyrics[idx + 1]).start is not None:
-            end = ms2sample(next_line.start, sample_rate)
-
-        logger.info(f"aligning line {idx}: sample_point[{start}, {end}] {text!r}")
+        start, end = _line_sample_range(working_lyrics, index, sample_rate)
+        logger.info(f"aligning line {index}: sample_point[{start}, {end}] {text!r}")
         if end is not None and start > end:
             logger.warning(
-                f"Line {idx}: invalid audio segment: [{start}, {end}], preserving original"
+                f"Line {index}: invalid audio segment: [{start}, {end}], preserving original"
             )
-            result.append(deepcopy(line))
+            result.append(line.copy())
             continue
-        if (end is not None and end >= total_samples) or (start >= total_samples):
+        if (end is not None and end >= total_samples) or start >= total_samples:
             logger.warning(
-                f"Line {idx}: audio segment out of bounds: [{start}, {end}] "
+                f"Line {index}: audio segment out of bounds: [{start}, {end}] "
                 f"(total samples: {total_samples}), preserving original"
             )
-            result.append(deepcopy(line))
+            result.append(line.copy())
             continue
 
         segment_end = end if end is not None else total_samples
-        if min_vocal_activity > 0:
-            activity = score_vocal_activity(
-                energy_curve,
-                start_ms=start / sample_rate * 1000,
-                end_ms=segment_end / sample_rate * 1000,
+        activity = score_vocal_activity(
+            energy_curve,
+            start_ms=start / sample_rate * 1000,
+            end_ms=segment_end / sample_rate * 1000,
+        )
+        if min_vocal_activity > 0 and activity < min_vocal_activity:
+            logger.info(
+                f"skip low vocal activity line {index}: activity={activity:.3f} "
+                f"< threshold={min_vocal_activity:.3f}: {text!r}"
             )
-            if activity < min_vocal_activity:
-                logger.info(
-                    f"skip low vocal activity line {idx}: activity={activity:.3f} "
-                    f"< threshold={min_vocal_activity:.3f}: {text!r}"
-                )
-                result.append(deepcopy(line))
-                continue
-
-        # 音频约定为 (channels, samples)；时间范围必须沿最后一维切片。
-        audio_piece = vocal_np[:, start:end] if end is not None else vocal_np[:, start:]
-        dumper.dump(f"05_line_{idx}", audio_piece, sample_rate)
-        try:
-            words: list[AlignedWord] = aligner.align(audio_piece, text, sample_rate)
-        except Exception as e:
-            logger.error(f"Error occurred while aligning line {idx}: {e}")
-            words = [AlignedWord(word=text, position=None)]
-
-        # 组装逐字 LyricToken
-        words_kara: list[LyricToken] = []
-        iidx = 0
-        for word in words:
-            if not (pos := word.position):
-                continue
-            next_idx = text.find(word.word, iidx)
-            if next_idx == -1:
-                logger.warning(
-                    f"aligned word {word.word!r} not found in text "
-                    f"at pos {iidx}, skipping"
-                )
-                continue
-            logger.debug(
-                f"got aligned word: {word.word!r}, at time {pos!r}ms "
-                f"at line {idx} [{next_idx}, {next_idx + len(word.word)}]"
-            )
-            if next_idx > iidx:
-                # 补上前一个单词和当前单词间的空隙
-                words_kara.append(
-                    LyricToken(
-                        start=words_kara[-1].end if words_kara else None,
-                        end=pos[0] + (line.start or 0),
-                        content=text[iidx:next_idx],
-                    )
-                )
-
-            words_kara.append(
-                LyricToken(
-                    start=pos[0] + (line.start or 0),
-                    end=pos[1] + (line.start or 0),
-                    content=word.word,
-                )
-            )
-            iidx = next_idx + len(word.word)
-
-        # 尾部剩余文本（仅在有内容时添加）
-        tail = text[iidx:]
-        if tail:
-            words_kara.append(
-                LyricToken(
-                    start=words_kara[-1].end if words_kara else None,
-                    end=None,
-                    content=tail,
-                )
-            )
-
-        # 对齐服务失败、未返回位置，或返回文本无法对应原歌词时，不能以空行
-        # 覆盖原歌词；保留原始行可确保失败降级不会造成数据丢失。
-        if not words_kara:
-            logger.warning(
-                f"Line {idx}: no usable alignment result, preserving original"
-            )
-            result.append(deepcopy(line))
+            result.append(line.copy())
             continue
 
-        new_line = LyricLine(
-            start=line.start,
-            end=line.end,
-            content=BasicLyricLine(words_kara),
-            reference_lines=line.reference_lines,
+        audio_piece = vocal_np[:, start:end] if end is not None else vocal_np[:, start:]
+        aligned_line = _align_line(
+            line,
+            text,
+            index=index,
+            audio=audio_piece,
+            sample_rate=sample_rate,
+            aligner=aligner,
+            dumper=dumper,
         )
-        if words_kara and words_kara[-1].end is not None:
-            new_line.end = words_kara[-1].end
-            new_line.content[-1].end = None
-        result.append(new_line)
-
+        result.append(aligned_line if aligned_line is not None else line.copy())
     return result

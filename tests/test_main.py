@@ -94,6 +94,7 @@ def test_run_batch_reuses_workers_and_releases_after_each_job(
         no_offset_estimate=True,
         offset=None,
         min_vocal_activity=0.01,
+        existing_byword_policy="realign",
     )
 
     assert main.run_batch(args) == 0

@@ -10,7 +10,7 @@ from typing import Literal
 from lemony_lrc_parser import Lyrics, SerializationOptions
 
 from karakara.aligner import Qwen3ForcedAligner
-from karakara.core import gen_kara
+from karakara.core import ExistingBywordPolicy, gen_kara
 from karakara.logging import setup_logging
 from karakara.preprocess import AudioPreprocessConfig
 from karakara.separator.demucs import DemucsSeparator
@@ -144,6 +144,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="低于该归一化人声活动度的行不对齐（默认: 0.01；0=关闭）",
     )
     parser.add_argument(
+        "--existing-byword-policy",
+        choices=("realign", "preserve"),
+        default="realign",
+        help="已有逐字时间标签的处理方式（默认: realign；preserve=原样保留）",
+    )
+    parser.add_argument(
         "--fail-fast",
         action="store_true",
         help="批处理时遇到第一个失败任务立即停止",
@@ -216,6 +222,7 @@ def process_job(
     dump_dir: Path | None,
     offset_ms: float | None,
     min_vocal_activity: float,
+    existing_byword_policy: ExistingBywordPolicy,
 ) -> None:
     """处理一组输入，并在函数返回时释放该任务的大型音频对象。"""
     lyrics = Lyrics.loads(job.lyrics_path.read_text(encoding="utf-8"))
@@ -229,6 +236,7 @@ def process_job(
         dump_dir=dump_dir,
         offset_ms=offset_ms,
         min_vocal_activity=min_vocal_activity,
+        existing_byword_policy=existing_byword_policy,
     )
     save_lyrics(aligned, job.output_path)
 
@@ -289,6 +297,7 @@ def run_batch(args: argparse.Namespace) -> int:
                     dump_dir=item_dump_dir,
                     offset_ms=resolve_offset(args),
                     min_vocal_activity=args.min_vocal_activity,
+                    existing_byword_policy=args.existing_byword_policy,
                 )
             except Exception as exc:
                 failures += 1
@@ -338,6 +347,7 @@ def run_single(args: argparse.Namespace) -> int:
             dump_dir=args.dump_dir,
             offset_ms=resolve_offset(args),
             min_vocal_activity=args.min_vocal_activity,
+            existing_byword_policy=args.existing_byword_policy,
         )
     finally:
         aligner.close()
