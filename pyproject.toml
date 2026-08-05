@@ -19,7 +19,8 @@ dependencies = [
     "requests>=2.32.5",
     "soundfile>=0.13.1",
     "torch>=2.9.0",
-    "torchaudio>=2.9.0",
+    # "torchaudio>=2.9.0",
+    # demucs 4.1.0 正式版不再需要 torchaudio
     "typing-extensions>=4.15.0",
     "zhconv>=1.4.3",
 ]
@@ -38,10 +39,13 @@ strict_equality = true
 
 
 [tool.uv.sources]
-demucs = { git = "https://github.com/adefossez/demucs" }
 torch = { index = "pytorch_cu130" }
-torchaudio = { index = "pytorch_cu130" }
+# torchaudio = { index = "pytorch_cu130" }
 lemony_lrc_parser = { index = "pypi" }
+
+[tool.uv.sources.demucs]
+git = "https://github.com/adefossez/demucs"
+rev = "eeac1d15891af95b1288d2884b95baa3e5baa96c"
 
 [[tool.uv.index]]
 name = "ustc"
@@ -88,8 +92,11 @@ qwenaligner = ["fastapi>=0.135.3", "pydantic>=2.12.4", "qwen-asr>=0.0.6"]
 
 [tool.uv]
 package = true
+# 本项目仅为 Windows 目标平台生成锁文件; Demucs 4.1.0 在 Intel macOS
+# 约束 torch<2.3, 与本项目 torch>=2.9 的跨平台锁定要求不可同时满足。
+environments = ["sys_platform == 'win32'"]
 override-dependencies = [
-    "torchaudio>=0.8",
+    # "torchaudio>=0.8",
     # override demucs 的 torchaudio 依赖, 因为它的版本太旧了
     # 已在项目内加了兼容性的 monkey patch
 ]
