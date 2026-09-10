@@ -6,32 +6,30 @@ from pathlib import Path
 
 import av
 import numpy as np
-import torch
 from numpy.typing import NDArray
 
 from karakara.typ import NpAudioData
 
 DEFAULT_SAMPLE_RATE = 44100
 
+#: 解码时的目标采样格式。``fltp`` 是平面 float32，``to_ndarray()`` 会得到
+#: (channels, samples)。
+_DECODE_FORMAT = "fltp"
 
-def load_audio(
+
+def _decode(
     src: str | Path | BytesIO,
     *,
-    sample_rate: int = DEFAULT_SAMPLE_RATE,
-    audiotrack_idx: int = 0,
-    skip_invalid: bool = True,
+    audiotrack_idx: int,
+    skip_invalid: bool,
+    resampler: av.AudioResampler,
 ) -> NpAudioData:
-    """
-    dim: 2
-    axis: (channels, samples)
-    """
-    resampler = av.AudioResampler("fltp", rate=sample_rate)
+    """手动 demux + decode，返回 (channels, samples) 的 float32 数组。"""
     frames_np: list[np.ndarray] = []
 
     with av.open(src, "r") as container:
         audio_stream = container.streams.audio[audiotrack_idx]
 
-        # 手动 demux + decode 以捕获单帧错误
         for packet in container.demux(audio_stream):
             try:
                 for raw_frame in packet.decode():
@@ -46,19 +44,63 @@ def load_audio(
                     continue
                 raise
 
-            # 流末尾 flush resampler 里的残留
-            if packet.is_corrupt or packet.is_discard:
-                # 标记为 corrupt 的 packet 通常已经 decode 失败，上面已经处理
-                pass
-
         # 最后 flush resampler
         for frame in resampler.resample(None):
             frames_np.append(frame.to_ndarray())
+
     if not frames_np:
         raise ValueError("未能读取任何有效音频帧，文件可能已严重损坏")
 
     wf_np: NDArray[np.float32] = np.concatenate(frames_np, axis=1).astype(np.float32)
     return wf_np
+
+
+def load_audio(
+    src: str | Path | BytesIO,
+    *,
+    sample_rate: int = DEFAULT_SAMPLE_RATE,
+    audiotrack_idx: int = 0,
+    skip_invalid: bool = True,
+) -> NpAudioData:
+    """
+    dim: 2
+    axis: (channels, samples)
+
+    重采样到 ``sample_rate``。
+    """
+    return _decode(
+        src,
+        audiotrack_idx=audiotrack_idx,
+        skip_invalid=skip_invalid,
+        resampler=av.AudioResampler(_DECODE_FORMAT, rate=sample_rate),
+    )
+
+
+def load_audio_native(
+    src: str | Path | BytesIO,
+    *,
+    audiotrack_idx: int = 0,
+    skip_invalid: bool = True,
+) -> tuple[NpAudioData, int]:
+    """解码音频并**保持原采样率**。
+
+    分离 worker 写出的音轨采样率由它选定的模型决定，主进程不该再去假设一个
+    固定值，因此直接把文件的原生采样率一并返回。
+
+    Returns:
+        ``(audio, sample_rate)``，audio 为 (channels, samples) 的 float32。
+    """
+    with av.open(src, "r") as container:
+        stream = container.streams.audio[audiotrack_idx]
+        sample_rate = stream.rate or DEFAULT_SAMPLE_RATE
+    # rate=None 表示沿用输入采样率，只做采样格式归一化
+    resampler = av.AudioResampler(_DECODE_FORMAT)
+    return _decode(
+        src,
+        audiotrack_idx=audiotrack_idx,
+        skip_invalid=skip_invalid,
+        resampler=resampler,
+    ), sample_rate
 
 
 def save_audio(
@@ -94,14 +136,6 @@ def save_audio(
         # Flush a-v stream
         for packet in stream.encode(None):
             container.mux(packet)
-
-
-def ndarray2tensor(array: NDArray[np.float32]) -> torch.Tensor:
-    return torch.from_numpy(array)
-
-
-def tensor2ndarray(tensor: torch.Tensor) -> NDArray[np.float32]:
-    return tensor.cpu().contiguous().numpy()  # type: ignore[return-value]
 
 
 def ms2sample(ms: int | float, sample_rate: int = DEFAULT_SAMPLE_RATE) -> int:

@@ -1,3 +1,14 @@
+# /// script
+# requires-python = "==3.12.*"
+# dependencies = [
+#     "fastapi>=0.135.3",
+#     "pydantic>=2.12.4",
+#     "python-multipart>=0.0.20",
+#     "qwen-asr>=0.0.6",
+#     "uvicorn>=0.35.0",
+# ]
+# ///
+
 from __future__ import annotations
 
 import logging

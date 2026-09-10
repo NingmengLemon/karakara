@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tempfile
 from logging import getLogger
 from pathlib import Path
 from typing import Literal
@@ -8,7 +9,7 @@ from lemony_lrc_parser import BasicLyricLine, LyricLine, Lyrics, LyricToken
 from lemony_lrc_parser.offset import apply_delta, iter_all_timestamps
 from numpy.typing import NDArray
 
-from karakara.aligner.abc import AbstractAligner, AlignedWord
+from karakara.aligner.abc import AbstractAligner, AlignedWord, LangCode
 from karakara.debug import AudioDumper
 from karakara.offset import build_energy_curve, estimate_offset, score_vocal_activity
 from karakara.preprocess import (
@@ -18,8 +19,8 @@ from karakara.preprocess import (
     suppress_vibrato,
 )
 from karakara.separator.abc import AbstractStemSeparator
-from karakara.utils.io import load_audio, ms2sample
-from karakara.utils.lang import detect_lang
+from karakara.utils.io import load_audio_native, ms2sample
+from karakara.utils.lang import detect_dominant_lang, detect_lang
 from karakara.utils.metadata import MetadataFilter
 
 logger = getLogger(__name__)
@@ -33,13 +34,24 @@ def _preprocess_vocals(
     separator: AbstractStemSeparator,
     config: AudioPreprocessConfig,
     dumper: AudioDumper,
+    separate_work_dir: str | Path | None = None,
 ) -> tuple[NDArray, int]:
-    """加载音频、分离人声并应用配置的预处理步骤。"""
-    sample_rate = separator.samplerate
-    audio_np = load_audio(audio, sample_rate=sample_rate)
-    dumper.dump("00_input", audio_np, sample_rate)
-    stems = separator.separate(audio_np)
-    vocal_np: NDArray = stems[separator.VOCAL_STEM_NAME]
+    """分离人声并应用配置的预处理步骤。
+
+    人声轨先由分离器写到临时目录，读回内存后立即删除。采样率取音轨文件的原生值，
+    不再假设某个固定值——不同分离模型（Demucs / MDX / RoFormer…）各有自己的
+    采样率，主进程没有必要、也不应该替它决定。
+    """
+    work_root = Path(separate_work_dir) if separate_work_dir is not None else None
+    if work_root is not None:
+        work_root.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory(
+        prefix="karakara-sep-", dir=str(work_root) if work_root else None
+    ) as tmp:
+        stems = separator.separate(audio, tmp, stems=(separator.VOCAL_STEM_NAME,))
+        vocal_np, sample_rate = load_audio_native(stems[separator.VOCAL_STEM_NAME])
+
     dumper.dump("01_vocal_stem", vocal_np, sample_rate)
 
     if vocal_np.ndim != 2:
@@ -111,7 +123,7 @@ def _should_preserve_line(
     text: str,
     *,
     index: int,
-    target_lang: Literal["en", "ja", "zh"] | None,
+    target_lang: LangCode | None,
     metadata_filter: MetadataFilter,
     existing_byword_policy: ExistingBywordPolicy,
 ) -> bool:
@@ -207,12 +219,13 @@ def _align_line(
     sample_rate: int,
     aligner: AbstractAligner,
     dumper: AudioDumper,
+    language: LangCode | None,
 ) -> LyricLine | None:
     """对单行执行对齐，不能可靠映射时返回 ``None``。"""
     audio_piece = audio
     dumper.dump(f"05_line_{index}", audio_piece, sample_rate)
     try:
-        words = aligner.align(audio_piece, text, sample_rate)
+        words = aligner.align(audio_piece, text, sample_rate, language=language)
     except Exception as exc:
         logger.error(f"Error occurred while aligning line {index}: {exc}")
         return None
@@ -241,9 +254,11 @@ def gen_kara(
     separator: AbstractStemSeparator,
     *,
     metadata_filter: MetadataFilter,
-    target_lang: Literal["en", "ja", "zh"] | None = None,
+    target_lang: LangCode | None = None,
+    aligner_language: Literal["auto"] | LangCode = "auto",
     preprocess_config: AudioPreprocessConfig | None = None,
     dump_dir: str | Path | None = None,
+    separate_work_dir: str | Path | None = None,
     offset_ms: float | None = None,
     min_vocal_activity: float = 0.01,
     existing_byword_policy: ExistingBywordPolicy = "realign",
@@ -252,6 +267,12 @@ def gen_kara(
 
     已有逐字时间标签的行由 ``existing_byword_policy`` 控制：``"realign"`` 会
     将所有 token 文本拼接后重新对齐；``"preserve"`` 则原样保留。
+
+    ``target_lang`` 用于**跳过**语言不符的行（例如夹在日文歌词里的中文翻译行）；
+    ``aligner_language`` 决定**送给对齐器**的语言，``"auto"`` 时按整首歌的
+    行级多数票判定。
+
+    ``separate_work_dir`` 是分离中间产物的落盘位置；``None`` 用系统临时目录。
     """
     if min_vocal_activity < 0:
         raise ValueError("min_vocal_activity must be non-negative")
@@ -264,10 +285,26 @@ def gen_kara(
         preprocess_config if preprocess_config is not None else AudioPreprocessConfig()
     )
     vocal_np, sample_rate = _preprocess_vocals(
-        audio, separator=separator, config=config, dumper=dumper
+        audio,
+        separator=separator,
+        config=config,
+        dumper=dumper,
+        separate_work_dir=separate_work_dir,
     )
     total_samples = vocal_np.shape[-1]
     logger.info(f"Total samples: {total_samples}")
+    language: LangCode | None
+    if aligner_language == "auto":
+        language = detect_dominant_lang(
+            line.text
+            for line in working_lyrics
+            if line.text and not metadata_filter(line.text)
+        )
+        if language is None:
+            logger.info("aligner language unresolved, falling back to aligner default")
+    else:
+        language = aligner_language
+    logger.info(f"aligner language: {language or 'aligner default'}")
     _apply_offset(
         working_lyrics,
         vocal_np,
@@ -330,6 +367,7 @@ def gen_kara(
             sample_rate=sample_rate,
             aligner=aligner,
             dumper=dumper,
+            language=language,
         )
         result.append(aligned_line if aligned_line is not None else line.copy())
     return result

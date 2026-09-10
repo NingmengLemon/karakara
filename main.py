@@ -13,10 +13,16 @@ from karakara.aligner import Qwen3ForcedAligner
 from karakara.core import ExistingBywordPolicy, gen_kara
 from karakara.logging import setup_logging
 from karakara.preprocess import AudioPreprocessConfig
-from karakara.separator.demucs import DemucsSeparator
+from karakara.separator import SubprocessStemSeparator
 from karakara.utils.metadata import MetadataFilter
 
 _AUDIO_SUFFIXES = frozenset({".wav", ".mp3", ".flac", ".m4a"})
+
+#: 后端 → worker 脚本。两者使用同一套行协议，所以主程序只认命令、不认后端。
+_SEPARATOR_WORKERS = {
+    "demucs": "scripts/separator_worker.py",
+    "audio-separator": "scripts/separator_worker_audio_separator.py",
+}
 
 
 @dataclass(frozen=True)
@@ -123,6 +129,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Qwen3ForcedAligner 服务地址（默认: http://localhost:8787）",
     )
     parser.add_argument(
+        "--aligner-language",
+        choices=("auto", "zh", "ja", "en", "yue", "ko"),
+        default="auto",
+        help="送给对齐器的语言；auto=按整首歌的行级多数票判定（默认: auto）",
+    )
+    parser.add_argument(
+        "--target-lang",
+        choices=("zh", "ja", "en"),
+        default=None,
+        help="只对齐该语言的行，其余行原样保留（默认: 不限制）",
+    )
+    parser.add_argument(
         "--no-normalize",
         action="store_true",
         help="禁用响度归一化",
@@ -148,6 +166,56 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("realign", "preserve"),
         default="realign",
         help="已有逐字时间标签的处理方式（默认: realign；preserve=原样保留）",
+    )
+    parser.add_argument(
+        "--separator-backend",
+        choices=("demucs", "audio-separator"),
+        default="demucs",
+        help=(
+            "分离后端（默认: demucs）。两者都是独立 worker 进程，主环境都不需要 torch。"
+            "audio-separator 的价值是人声质量（MDX/VR/RoFormer 等模型），代价是它的"
+            "环境更重；需要配合 --separator-model 指定模型文件名"
+        ),
+    )
+    parser.add_argument(
+        "--separator-cmd",
+        nargs="+",
+        default=None,
+        help=(
+            "自定义 worker 启动命令，优先级最高（缺省用 KARAKARA_SEPARATOR_CMD，"
+            "再缺省按 --separator-backend 选择脚本）"
+        ),
+    )
+    parser.add_argument(
+        "--separator-model",
+        default=None,
+        help=(
+            "分离模型名（默认交给 worker；Demucs 后端为 UVR_Demucs_Model_1，"
+            "可用脚本的 --info 查看本地仓库里全部可选模型）"
+        ),
+    )
+    parser.add_argument(
+        "--separator-device",
+        default=None,
+        help="分离设备，如 cuda:0 / cpu（默认交给 worker 自动选择）",
+    )
+    parser.add_argument(
+        "--separator-model-dir",
+        type=Path,
+        default=None,
+        help="分离模型仓库目录（默认交给 worker 自带的路径）",
+    )
+    parser.add_argument(
+        "--separator-timeout",
+        type=float,
+        default=None,
+        help="单次分离请求超时秒数（默认不限时）",
+    )
+    parser.add_argument(
+        "--sep-work-dir",
+        type=Path,
+        default=None,
+        help="分离中间产物目录（默认用系统临时目录；每首歌用完即删）",
     )
     parser.add_argument(
         "--fail-fast",
@@ -212,17 +280,38 @@ def save_lyrics(lyrics: Lyrics, output_path: Path) -> None:
     )
 
 
+def build_separator(args: argparse.Namespace) -> SubprocessStemSeparator:
+    """按 CLI 选项构造分离器。
+
+    ``--separator-cmd`` 优先；否则按 ``--separator-backend`` 选脚本，用
+    ``uv run --script`` 拉起（worker 脚本头部自带 PEP 723 内联依赖）。
+    """
+    command = args.separator_cmd
+    if command is None:
+        command = ["uv", "run", "--script", _SEPARATOR_WORKERS[args.separator_backend]]
+    return SubprocessStemSeparator(
+        command=command,
+        model=args.separator_model,
+        device=args.separator_device,
+        model_dir=args.separator_model_dir,
+        request_timeout=args.separator_timeout,
+    )
+
+
 def process_job(
     job: BatchJob,
     *,
     aligner: Qwen3ForcedAligner,
-    separator: DemucsSeparator,
+    separator: SubprocessStemSeparator,
     metadata_filter: MetadataFilter,
     preprocess_config: AudioPreprocessConfig,
     dump_dir: Path | None,
+    separate_work_dir: Path | None,
     offset_ms: float | None,
     min_vocal_activity: float,
     existing_byword_policy: ExistingBywordPolicy,
+    aligner_language: str = "auto",
+    target_lang: str | None = None,
 ) -> None:
     """处理一组输入，并在函数返回时释放该任务的大型音频对象。"""
     lyrics = Lyrics.loads(job.lyrics_path.read_text(encoding="utf-8"))
@@ -234,23 +323,23 @@ def process_job(
         metadata_filter=metadata_filter,
         preprocess_config=preprocess_config,
         dump_dir=dump_dir,
+        separate_work_dir=separate_work_dir,
         offset_ms=offset_ms,
         min_vocal_activity=min_vocal_activity,
         existing_byword_policy=existing_byword_policy,
+        aligner_language=aligner_language,
+        target_lang=target_lang,
     )
     save_lyrics(aligned, job.output_path)
 
 
 def release_item_resources() -> None:
-    """回收单个任务产生的 CPU/GPU 临时对象，保留可复用的模型实例。"""
-    gc.collect()
-    try:
-        import torch
+    """回收单个任务产生的 CPU/GPU 临时对象。
 
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-    except ImportError:
-        pass
+    GPU 侧的资源现在由分离 worker 进程独自持有，主进程不再初始化 CUDA 上下文，
+    因此这里只需要回收 Python 对象。
+    """
+    gc.collect()
 
 
 def resolve_offset(args: argparse.Namespace) -> float | None:
@@ -278,7 +367,7 @@ def run_batch(args: argparse.Namespace) -> int:
     )
     metadata_filter = MetadataFilter.from_file("metadata_filter.toml")
     aligner = Qwen3ForcedAligner(base_url=args.aligner_url)
-    separator = DemucsSeparator()
+    separator = build_separator(args)
     failures = 0
     try:
         for index, job in enumerate(jobs, start=1):
@@ -295,9 +384,12 @@ def run_batch(args: argparse.Namespace) -> int:
                     metadata_filter=metadata_filter,
                     preprocess_config=preprocess_config,
                     dump_dir=item_dump_dir,
+                    separate_work_dir=args.sep_work_dir,
                     offset_ms=resolve_offset(args),
                     min_vocal_activity=args.min_vocal_activity,
                     existing_byword_policy=args.existing_byword_policy,
+                    aligner_language=args.aligner_language,
+                    target_lang=args.target_lang,
                 )
             except Exception as exc:
                 failures += 1
@@ -308,6 +400,7 @@ def run_batch(args: argparse.Namespace) -> int:
                 release_item_resources()
     finally:
         aligner.close()
+        separator.close()
 
     print(f"Batch finished: {len(jobs) - failures} succeeded, {failures} failed")
     return 1 if failures else 0
@@ -337,20 +430,25 @@ def run_single(args: argparse.Namespace) -> int:
         compress=args.compress,
     )
     aligner = Qwen3ForcedAligner(base_url=args.aligner_url)
+    separator = build_separator(args)
     try:
         process_job(
             job,
             aligner=aligner,
-            separator=DemucsSeparator(),
+            separator=separator,
             metadata_filter=MetadataFilter.from_file("metadata_filter.toml"),
             preprocess_config=preprocess_config,
             dump_dir=args.dump_dir,
+            separate_work_dir=args.sep_work_dir,
             offset_ms=resolve_offset(args),
             min_vocal_activity=args.min_vocal_activity,
             existing_byword_policy=args.existing_byword_policy,
+            aligner_language=args.aligner_language,
+            target_lang=args.target_lang,
         )
     finally:
         aligner.close()
+        separator.close()
     print(f"saved: {job.output_path}")
     return 0
 
