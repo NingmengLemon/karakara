@@ -9,7 +9,7 @@ from typing_extensions import override
 from karakara.typ import NpAudioData, NpAudioSamples
 from karakara.utils.io import DEFAULT_SAMPLE_RATE, save_audio
 
-from ..abc import AbstractAligner, AlignedWord
+from ..abc import AbstractAligner, AlignedWord, LangCode
 from .client import GentleClient
 
 
@@ -27,7 +27,10 @@ class GentleAligner(AbstractAligner):
         audio: NpAudioData | NpAudioSamples,
         text: str,
         sample_rate: int = DEFAULT_SAMPLE_RATE,
+        *,
+        language: LangCode | None = None,
     ) -> list[AlignedWord]:
+        # Gentle 只支持英语对齐，``language`` 在本实现中被忽略。
         if audio.ndim == 1:
             audio = np.expand_dims(audio, axis=0)
         elif audio.ndim == 2:

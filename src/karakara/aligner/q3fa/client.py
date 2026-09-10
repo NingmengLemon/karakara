@@ -42,7 +42,7 @@ class Q3FAClient:
     Qwen3-ForcedAligner HTTP API client.
 
     Example:
-        client = Q3FAClient("http://localhost:8000")
+        client = Q3FAClient("http://localhost:8787")
         result = client.align_bytes(audio_bytes, "你好世界", language="Chinese")
         for w in result["words"]:
             print(w["text"], w["start_time"], w["end_time"])
@@ -50,12 +50,12 @@ class Q3FAClient:
 
     def __init__(
         self,
-        base_url: str = "http://localhost:8000",
+        base_url: str = "http://localhost:8787",
         timeout: float | None = 120.0,
         session: requests.Session | None = None,
     ) -> None:
         """
-        :param base_url: 服务根地址（例如 http://localhost:8000）
+        :param base_url: 服务根地址（例如 http://localhost:8787）
         :param timeout: 默认单次请求超时（秒）。对可能耗时很长的对齐请求，可传 None。
         :param session: 可选的 requests.Session（便于复用连接）
         """
