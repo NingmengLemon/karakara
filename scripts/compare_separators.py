@@ -122,11 +122,18 @@ class Metrics:
     coverage: float
     peak: float
     rms_dbfs: float
+    #: 该配置的第一首歌包含 worker 冷启动（``uv run --script`` 准备环境 +
+    #: ``import torch`` + 模型加载）。汇总时必须把它排除，否则耗时对比量的主要
+    #: 是冷启动常数而不是分离本身。
+    cold_start: bool = False
 
 
 def vocal_regions(
-    lyrics: Lyrics, total_duration_ms: float, offset_ms: float,
-    *, metadata_filter: MetadataFilter,
+    lyrics: Lyrics,
+    total_duration_ms: float,
+    offset_ms: float,
+    *,
+    metadata_filter: MetadataFilter,
 ) -> list[tuple[int, int]]:
     """返回歌词行区间 ``[行i起点, 行i+1起点)``，单位 ms。"""
     shifted = lyrics.copy()
@@ -139,9 +146,7 @@ def vocal_regions(
         and 0 <= line.start < total_duration_ms
         and not metadata_filter(line.text)
     )
-    return [
-        (int(a), int(b)) for a, b in itertools.pairwise(starts) if int(b) > int(a)
-    ]
+    return [(int(a), int(b)) for a, b in itertools.pairwise(starts) if int(b) > int(a)]
 
 
 def measure(
@@ -198,7 +203,9 @@ def discover_songs(songs_dir: Path) -> list[tuple[Path, Path]]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="分离后端 / 模型的人声质量 A/B 对比")
-    parser.add_argument("--songs-dir", type=Path, required=True, help="含 lrc+音频对的目录")
+    parser.add_argument(
+        "--songs-dir", type=Path, required=True, help="含 lrc+音频对的目录"
+    )
     parser.add_argument(
         "--configs",
         nargs="+",
@@ -258,42 +265,77 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(f"工作目录: {work_root}\n")
 
+    # ---------- 每个配置只起一个 worker，跨歌曲复用 ----------
+    # 本文档开头就写了「模型只加载一次」是这套架构的要点；对比脚本自己更不能
+    # 每首歌 popen 一次——那样每首歌的 seconds 里都混着一次 ``uv run --script``
+    # 的环境解析 + import torch + 模型加载（实测冷启动约 2.6s），耗时对比量的
+    # 主要就是这个常数。这里显式复用，并把每个配置的首曲标成 cold_start。
+    to_separate: list[SeparatorConfig] = list(configs)
+    if reference.label not in {config.label for config in to_separate}:
+        to_separate.append(reference)
+    separators: dict[str, SubprocessStemSeparator] = {
+        config.label: SubprocessStemSeparator(
+            command=config.command(args.worker_python),
+            model=config.model,
+            model_dir=config.model_dir,
+        )
+        for config in to_separate
+    }
+    cold_start = dict.fromkeys(separators, True)
+
     try:
         for lrc_path, audio_path in songs:
             lyrics = Lyrics.loads(lrc_path.read_text(encoding="utf-8"))
 
-            # ---------- 用基准配置确定固定偏移 ----------
-            ref_vocal_path, ref_seconds = separate_with(
-                reference, audio_path, work_root / "reference" / audio_path.stem,
-                args.worker_python,
-            )
+            # ---------- 先用所有配置分离（含基准），再用基准确定固定偏移 ----------
+            vocals: dict[str, tuple[Path, float, bool]] = {}
+            for config in to_separate:
+                try:
+                    vocal_path, seconds = separate_with(
+                        separators[config.label],
+                        audio_path,
+                        work_root / config.slug / audio_path.stem,
+                    )
+                    vocals[config.label] = (
+                        vocal_path,
+                        seconds,
+                        cold_start[config.label],
+                    )
+                except Exception as exc:  # noqa: BLE001 - 单个配置失败不该中断整体对比
+                    errors.append(f"{audio_path.name} / {config.label}: {exc}")
+                    print(f"    {config.label:<34} SEPARATION FAILED: {exc}")
+
+            if reference.label not in vocals:
+                print(f"=== {audio_path.name}\n    基准配置分离失败，跳过该曲")
+                continue
+
+            ref_vocal_path, ref_seconds, ref_cold = vocals[reference.label]
             ref_vocal, sample_rate = load_audio_native(ref_vocal_path)
             total_ms = ref_vocal.shape[-1] / sample_rate * 1000
             offset_ms = estimate_offset(
-                ref_vocal, lyrics, sample_rate,
-                metadata_filter=metadata_filter, window_ms=WINDOW_MS,
+                ref_vocal,
+                lyrics,
+                sample_rate,
+                metadata_filter=metadata_filter,
+                window_ms=WINDOW_MS,
             )
             spans = vocal_regions(
                 lyrics, total_ms, offset_ms, metadata_filter=metadata_filter
             )
             print(
                 f"=== {audio_path.name}\n"
-                f"    基准 {reference.label}: {ref_seconds:.1f}s, "
+                f"    基准 {reference.label}: {ref_seconds:.1f}s"
+                f"{'（含冷启动）' if ref_cold else ''}, "
                 f"采样率 {sample_rate}, 固定偏移 {offset_ms:+.0f}ms, "
                 f"行区间 {len(spans)} 段"
             )
 
             for config in configs:
                 label = config.label
+                if label not in vocals:
+                    continue
                 try:
-                    if config.label == reference.label:
-                        vocal_path, seconds = ref_vocal_path, ref_seconds
-                    else:
-                        vocal_path, seconds = separate_with(
-                            config, audio_path,
-                            work_root / config.slug / audio_path.stem,
-                            args.worker_python,
-                        )
+                    vocal_path, seconds, cold = vocals[label]
                     vocal, rate = load_audio_native(vocal_path)
                     leakage, contrast, coverage, peak, rms_dbfs = measure(
                         vocal, rate, spans
@@ -310,19 +352,26 @@ def main(argv: list[str] | None = None) -> int:
                             coverage=round(coverage, 4),
                             peak=round(peak, 4),
                             rms_dbfs=round(rms_dbfs, 2),
+                            cold_start=cold,
                         )
                     )
                     print(
-                        f"    {label:<34} {seconds:6.1f}s  "
+                        f"    {label:<34} {seconds:6.1f}s"
+                        f"{' (cold)' if cold else '       '}  "
                         f"泄漏 {leakage:.3f}  对比度 {contrast:.4f}  "
                         f"占位 {coverage:.2f}"
                     )
                 except Exception as exc:  # noqa: BLE001 - 单个配置失败不该中断整体对比
                     errors.append(f"{audio_path.name} / {label}: {exc}")
                     print(f"    {label:<34} FAILED: {exc}")
+            # 每个配置的首曲已经跑过，后续不再算冷启动
+            for config in to_separate:
+                cold_start[config.label] = False
     finally:
         import shutil
 
+        for separator in separators.values():
+            separator.close()
         shutil.rmtree(work_root, ignore_errors=True)
 
     print_report(results, errors)
@@ -345,20 +394,16 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def separate_with(
-    config: SeparatorConfig, audio: Path, dest: Path, python: str | None = None
+    separator: SubprocessStemSeparator, audio: Path, dest: Path
 ) -> tuple[Path, float]:
-    """用指定配置分离一首歌，返回 (人声轨路径, 耗时秒)。"""
-    separator = SubprocessStemSeparator(
-        command=config.command(python),
-        model=config.model,
-        model_dir=config.model_dir,
-    )
+    """用**已构造好的**分离器分离一首歌，返回 (人声轨路径, 耗时秒)。
+
+    ``separator`` 由调用方跨歌曲复用（见 ``main()``）：worker 进程常驻、模型只
+    加载一次，所以耗时里不含重复的冷启动开销。
+    """
     started = time.perf_counter()
-    try:
-        stems = separator.separate(audio, dest, stems=["vocals"])
-        return stems["vocals"], time.perf_counter() - started
-    finally:
-        separator.close()
+    stems = separator.separate(audio, dest, stems=["vocals"])
+    return stems["vocals"], time.perf_counter() - started
 
 
 def print_report(results: list[Metrics], errors: list[str]) -> None:
@@ -371,8 +416,14 @@ def print_report(results: list[Metrics], errors: list[str]) -> None:
     for item in results:
         by_config.setdefault(item.config, []).append(item)
 
+    def timing_rows(items: list[Metrics]) -> list[Metrics]:
+        """算耗时时排除冷启动那一首（有其它样本可用时）。"""
+        warm = [item for item in items if not item.cold_start]
+        return warm or items
+
     print("\n" + "=" * 92)
     print("按配置汇总（多首取中位数；泄漏越低越好，对比度/占位越高越好）")
+    print("耗时列已排除每个配置的首曲冷启动（worker 环境准备 + import torch + 载模型）")
     print("=" * 92)
     print(
         f"{'config':<34}{'泄漏':>9}{'对比度':>10}{'占位':>8}"
@@ -380,9 +431,7 @@ def print_report(results: list[Metrics], errors: list[str]) -> None:
     )
     print("-" * 92)
     for label, items in sorted(
-        by_config.items(), key=lambda kv: statistics.median(
-            [i.leakage for i in kv[1]]
-        )
+        by_config.items(), key=lambda kv: statistics.median([i.leakage for i in kv[1]])
     ):
         print(
             f"{label:<34}"
@@ -391,10 +440,18 @@ def print_report(results: list[Metrics], errors: list[str]) -> None:
             f"{statistics.median([i.coverage for i in items]):>8.2f}"
             f"{statistics.median([i.peak for i in items]):>9.3f}"
             f"{statistics.median([i.rms_dbfs for i in items]):>11.2f}"
-            f"{statistics.median([i.seconds for i in items]):>8.1f}"
+            f"{statistics.median([i.seconds for i in timing_rows(items)]):>8.1f}"
         )
     print("-" * 92)
     print(f"曲目数 {len({i.song for i in results})}，结果行 {len(results)}")
+    single_song_configs = [
+        label for label, items in by_config.items() if len(timing_rows(items)) < 2
+    ]
+    if single_song_configs:
+        print(
+            "注意：以下配置只有 1 首可用样本，其耗时仍含冷启动，"
+            f"不具可比性：{', '.join(single_song_configs)}"
+        )
     if errors:
         print(f"\n失败 {len(errors)} 项：")
         for message in errors:
