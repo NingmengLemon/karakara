@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import textwrap
 from pathlib import Path
 
@@ -598,3 +599,164 @@ class TestFromFile:
         assert not f.is_metadata("[ti:X]")
         assert not f.is_metadata("(Prelude)")
         assert not f.is_metadata("5")
+
+
+# ===========================================================================
+# 仓库自带的那份配置（metadata_filter.toml）
+#
+# 这些断言把一个真实曲库扫描的结论固化下来：哪些形态必须被抓到，哪些形态
+# **绝对不能**抓（假阳性会直接删掉一行歌词，是这套过滤最严重的失败模式）。
+# 规模数字来自 6622 个真实 .lrc 的统计。
+# ===========================================================================
+
+
+def repo_filter() -> MetadataFilter:
+    path = Path(__file__).resolve().parent.parent / "metadata_filter.toml"
+    return MetadataFilter.from_file(path)
+
+
+class TestShippedConfigCatches:
+    """仓库配置必须抓到的形态。"""
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            # 缩写写法（真实曲库里的漏网主力）
+            "曲：シャノン",
+            "词：みきとP",
+            "歌：GUMI",
+            "词曲：COP",
+            "词、曲：一二三",
+            "译：某人",
+            "绘:王刃、唯Tu（封面）",
+            "调：坐标P",
+            # 职位
+            "原唱：乐正绫",
+            "人声 : Danny Sweet",
+            "和声编写：梁丹郡",
+            "混音工程师：张之晨",
+            "插画：贝贝-web-",
+            "映像：スタジオごはん",
+            "発売日：2017 01 18",
+            # 乐器
+            "吉他 : Phil Solem",
+            "贝斯：成元",
+            "弦乐：瀚樂集 Han Ensemble",
+            # 英文（IGNORECASE）
+            "Vocal：Cryu",
+            "vocal: someone",
+            "Lyrics: Kizuna AI",
+            "Music:NceS",
+            "Album: Halozy - Starry Presto (C77)",
+            "Arrange：KOBATYU",
+            # 空值行（`+.` 时期抓不到，见 test_metadata.py 的 .+ → .* 注释）
+            "Singer：",
+            "Rap:",
+            # ID3 标签（过滤器层面必须认；注意管线里这些标签会被解析器先收进
+            # lyrics.metadata，根本不会以行的形态到达这里——所以这条断言保护的是
+            # MetadataFilter 独立使用时的正确性，不是召回率。）
+            "[by: 某人]",
+            "[ar:歌手]",
+            "[ly: 苍十三 / 阿良良木健]",
+            "[total: 274005]",
+            # 全角括号的段落标记（本次才支持）
+            "（间奏）",
+            "【サビ】",
+            "(Bridge)",
+            # 自定义模式
+            "————————————",
+            "……",
+            "♪♪",
+            "End",
+            "(END)",
+            "終わり",
+            "undefined",
+            "Vocals by Hannah Crowley",
+            "编曲 Arranger：宫奇Gon(HOYO-MiX)",
+            "出品 Produced by：HOYO-MiX",
+            "（翻译鸣谢：弓野笃祯）",
+            # 纯段落词裸行（自定义模式 ④/⑥）
+            "Interlude",
+            "Instrumental",
+            "music",
+            "サビ",
+            "間奏",
+        ],
+    )
+    def test_is_metadata(self, line: str) -> None:
+        assert repo_filter().is_metadata(line), f"应当被判为元数据行: {line!r}"
+
+
+class TestShippedConfigMustNotCatch:
+    """仓库配置**绝对不能**抓到的形态（每一条都有真实命中的歌词作证据）。"""
+
+    @pytest.mark.parametrize(
+        ("line", "why"),
+        [
+            ("合：赔盏茶才算周到", "对唱分句标记，冒号后就是歌词正文（48 行）"),
+            ("洛：麻酱韭花对垒 转眼用光满桌调料", "角色分句标记（28 行）"),
+            ("雏：才会这样慌不择路急不择途地迷失吗", "角色分句标记（27 行）"),
+            ("8:07に君を待ってる", "「时间 + 歌词」，不是时间戳元数据"),
+            ("8:00 二号车二节 被占的特等座", "同上"),
+            ("_(:з」∠)_", "颜文字歌词"),
+            ("By the way, do you like baseball?", "英文歌词里以 By 开头"),
+            ("Bye for now", "同上"),
+            ("谢谢 想说谢谢你", "「谢谢」开头的歌词"),
+            ("谢谢，我吃饱了", "同上"),
+            ("Thanks for the meal", "英文歌词"),
+            ("Thanks a lot 君のsongが好きそう", "英文歌词"),
+            ("**你是什么垃圾？**", "装饰符号开头的歌词"),
+            ("****ed get right now", "同上"),
+            ("（与你同在）", "整行被括号包裹的歌词（10,163 行 / 1,887 文件）"),
+            ("(By your side)", "同上"),
+            ("「よっしゃー行くぞ」", "同上"),
+            ("1", "报数演唱（コンコンきつね）"),
+            ("3", "报数演唱"),
+            ("1234", "连打演唱"),
+            ("11111111111111111111111111111111", "连打演唱"),
+            ("[間奏]", "方括号形态刻意不认，避免与 LRC 时间标签语法打架"),
+            ("Music を止めないで", "段落词后面还有正文——整行锚定就是为了不误伤这种"),
+            ("Solo で踊ろう", "同上"),
+            ("Interlude of my heart", "同上（英文歌词）"),
+        ],
+    )
+    def test_is_not_metadata(self, line: str, why: str) -> None:
+        assert not repo_filter().is_metadata(line), f"误判为元数据行（{why}）: {line!r}"
+
+
+class TestShippedConfigInvariants:
+    """配置本身的不变量。"""
+
+    def test_pure_numbers_stays_disabled(self) -> None:
+        """纯数字必须保持关闭：真实曲库里有报数/连打演唱。"""
+        floater = repo_filter()
+        assert not floater.is_metadata("1")
+        assert not floater.is_metadata("1234")
+
+    def test_config_patterns_compile_without_bare_inline_flag(self) -> None:
+        """自定义正则不能写裸 `(?i)`：所有分支会被 `|` 拼成一条正则。
+
+        解析 TOML 再查（而不是在原文里搜字符串），否则注释里提到 `(?i)` 也会被算进去。
+        """
+        import tomllib
+
+        path = Path(__file__).resolve().parent.parent / "metadata_filter.toml"
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+        patterns: list[str] = list(data.get("custom", {}).get("patterns", []))
+        assert patterns, "仓库配置里应当有自定义模式"
+        for pattern in patterns:
+            # 裸 (?i) = 紧跟的不是冒号（作用域写法是 (?i:...)）
+            scoped = pattern.replace("(?i:", "").replace("(?m:", "")
+            assert "(?i)" not in scoped, (
+                "裸 (?i) 会让 re.compile 抛 "
+                "'global flags not at the start of the expression'"
+            )
+            assert "(?m)" not in scoped
+            # 每条都必须真的能编译
+            re.compile(pattern)
+
+    def test_shipped_config_still_catches_every_legacy_keyword(self) -> None:
+        """新增条目不能把原有 28 个关键字挤掉（零召回损失）。"""
+        floater = repo_filter()
+        for keyword in _DEFAULT_KEYWORDS:
+            assert floater.is_metadata(f"{keyword}: 某人"), keyword

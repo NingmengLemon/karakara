@@ -136,20 +136,24 @@ class MetadataFilter:
     def _build_pattern(self) -> re.Pattern[str]:
         parts: list[str] = []
 
-        # 1) 关键字匹配：以关键字开头，后接冒号和值
+        # 1) 关键字匹配：以关键字开头，后接冒号和值。
+        #    值用 `.*` 而不是 `.+`：制谱工具会写出空值行（`Singer：`、`Rap:`），
+        #    它们同样是元数据，而 `.+` 要求至少一个字符、抓不到。
         if self._keywords:
             escaped = "|".join(re.escape(k) for k in self._keywords)
-            parts.append(rf"^\s*(?:{escaped})\s*[：:].+")
+            parts.append(rf"^\s*(?:{escaped})\s*[：:].*")
 
         # 2) ID3 风格标签（如 [ti:标题] [ar:歌手]）
         if self._detect_id3_tags:
             tags = "|".join(re.escape(t) for t in self._id3_tags)
             parts.append(rf"\[(?:{tags}):[^\]]*\]")
 
-        # 3) 括号段落标记（如 (Prelude) (间奏)）—— 要求整行匹配
+        # 3) 括号段落标记（如 (Prelude) （间奏） 【サビ】）—— 要求整行匹配。
+        #    括号形态要覆盖全角：中文/日文谱面几乎不写半角括号。刻意**不**接受方括号，
+        #    那个位置会和 LRC 自身的时间标签语法打架。
         if self._detect_parenthetical:
             markers = "|".join(re.escape(m) for m in self._parenthetical_markers)
-            parts.append(rf"^\s*\(\s*(?:{markers})\s*\)\s*$")
+            parts.append(rf"^\s*[（(【]\s*(?:{markers})\s*[）)】]\s*$")
 
         # 4) 纯数字行
         if self._detect_pure_numbers:
