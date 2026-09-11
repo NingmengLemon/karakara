@@ -165,7 +165,7 @@ class DemucsBackend:
             "CUDA 不可用，分离将在 CPU 上运行（会慢很多）。"
             "当前 torch=%s。若要用 GPU，请让 worker 环境改用 PyTorch 的 CUDA 索引："
             "在 scripts/separator_worker.py 的 PEP 723 头部加入 "
-            "'[[tool.uv.index]] name=\"pytorch_cu130\" url=\"https://download.pytorch.org/whl/cu130\""
+            '\'[[tool.uv.index]] name="pytorch_cu130" url="https://download.pytorch.org/whl/cu130"'
             " explicit=true' 与 '[tool.uv.sources] torch = { index = \"pytorch_cu130\" }'，"
             "或用 --separator-cmd 指向一个已装 CUDA 版 torch 的解释器",
             getattr(torch, "__version__", "?"),
@@ -189,7 +189,9 @@ class DemucsBackend:
         if cached is not None:
             return cached
 
-        LOGGER.info("loading demucs model: model=%s dir=%s device=%s", model, model_dir, device)
+        LOGGER.info(
+            "loading demucs model: model=%s dir=%s device=%s", model, model_dir, device
+        )
         separator = demucs.api.Separator(
             model=model,
             repo=model_dir,
@@ -305,9 +307,7 @@ class DemucsBackend:
             "version": getattr(torch, "__version__", None),
             "cuda_build": getattr(torch.version, "cuda", None),
             "cuda_available": cuda_available,
-            "device_count": (
-                torch.cuda.device_count() if cuda_available else 0
-            ),
+            "device_count": (torch.cuda.device_count() if cuda_available else 0),
             "error": error,
         }
 
@@ -322,9 +322,7 @@ def _write_response(payload: dict[str, Any]) -> None:
     sys.stdout.flush()
 
 
-def _handle(
-    request: dict[str, Any], backend: DemucsBackend
-) -> dict[str, Any]:
+def _handle(request: dict[str, Any], backend: DemucsBackend) -> dict[str, Any]:
     cmd = request.get("cmd")
     if cmd == "shutdown":
         return {"ok": True, "shutdown": True}

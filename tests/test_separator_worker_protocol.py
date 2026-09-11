@@ -145,7 +145,13 @@ def test_unknown_command_and_bad_payload_are_rejected(
         [
             {"id": 1, "cmd": "frobnicate"},
             {"id": 2, "cmd": "separate"},
-            {"id": 3, "cmd": "separate", "audio": "a.mp3", "dest_dir": "d", "stems": "vocals"},
+            {
+                "id": 3,
+                "cmd": "separate",
+                "audio": "a.mp3",
+                "dest_dir": "d",
+                "stems": "vocals",
+            },
         ],
         monkeypatch,
     )

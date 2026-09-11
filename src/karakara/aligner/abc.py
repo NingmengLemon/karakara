@@ -18,9 +18,6 @@ LangCode = str
 
 
 class AbstractAligner(ABC):
-    def __init__(self) -> None:
-        pass
-
     @abstractmethod
     def align(
         self,

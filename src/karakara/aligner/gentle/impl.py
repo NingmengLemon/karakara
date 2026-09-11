@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from io import BytesIO
+from typing import override
 
 import numpy as np
 import requests
-from typing_extensions import override
 
 from karakara.typ import NpAudioData, NpAudioSamples
 from karakara.utils.io import DEFAULT_SAMPLE_RATE, save_audio

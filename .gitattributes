@@ -1,0 +1,34 @@
+# 统一行尾策略。
+#
+# 背景：本仓库此前的行尾是混的（部分文件 LF、部分 CRLF），而本地又设了
+# core.autocrlf=true，于是每次改动都会看到一片 "LF will be replaced by CRLF"
+# 的告警，diff/format 检查也随检出环境漂移。用 .gitattributes 把规则固定下来：
+# 仓库内一律 LF，工作树也保持 LF（显式 eol=lf 会覆盖 core.autocrlf 的转换）。
+* text=auto eol=lf
+
+# Windows 命令脚本必须保留 CRLF：cmd.exe 对纯 LF 的 .bat/.cmd 会出问题。
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# 二进制：不要让 git 去猜或做任何换行转换。
+*.flac  binary
+*.mp3   binary
+*.wav   binary
+*.m4a   binary
+*.ogg   binary
+*.onnx  binary
+*.pth   binary
+*.ckpt  binary
+*.safetensors binary
+*.pkf   binary
+*.ico   binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+
+# 文本但要避免 diff 噪声/被当成源码统计。
+*.lrc   text
+*.toml  text
+*.lock  text
+uv.lock linguist-generated=true

@@ -127,7 +127,9 @@ def test_worker_process_is_reused_across_requests(tmp_path: Path, audio: Path) -
         separator.close()
 
 
-def test_separate_forwards_whitelist_and_model_options(tmp_path: Path, audio: Path) -> None:
+def test_separate_forwards_whitelist_and_model_options(
+    tmp_path: Path, audio: Path
+) -> None:
     script = write_fake_worker(
         tmp_path,
         COMPLIANT_WORKER.replace(
@@ -189,7 +191,9 @@ def test_worker_reported_failure_propagates(tmp_path: Path, audio: Path) -> None
         separator.close()
 
 
-def test_worker_exiting_without_response_is_an_error(tmp_path: Path, audio: Path) -> None:
+def test_worker_exiting_without_response_is_an_error(
+    tmp_path: Path, audio: Path
+) -> None:
     """worker 被 OOM 干掉时必须立刻报错，而不是永久挂住。
 
     同时要求报出**真实退出码**：不 reap 进程的话 ``poll()`` 常常还返回 ``None``，
@@ -275,7 +279,9 @@ def test_stray_non_protocol_stdout_is_tolerated(tmp_path: Path, audio: Path) -> 
         separator.close()
 
 
-def test_corrupted_json_response_is_a_protocol_error(tmp_path: Path, audio: Path) -> None:
+def test_corrupted_json_response_is_a_protocol_error(
+    tmp_path: Path, audio: Path
+) -> None:
     script = write_fake_worker(
         tmp_path,
         """
@@ -294,7 +300,9 @@ def test_corrupted_json_response_is_a_protocol_error(tmp_path: Path, audio: Path
         separator.close()
 
 
-def test_missing_source_audio_is_rejected_before_spawning(tmp_path: Path, audio: Path) -> None:
+def test_missing_source_audio_is_rejected_before_spawning(
+    tmp_path: Path, audio: Path
+) -> None:
     separator = SubprocessStemSeparator([sys.executable, "does-not-matter.py"])
     try:
         with pytest.raises(StemSeparationError, match="源音频不存在"):
@@ -304,7 +312,9 @@ def test_missing_source_audio_is_rejected_before_spawning(tmp_path: Path, audio:
         separator.close()
 
 
-def test_missing_executable_reports_actionable_error(tmp_path: Path, audio: Path) -> None:
+def test_missing_executable_reports_actionable_error(
+    tmp_path: Path, audio: Path
+) -> None:
     separator = SubprocessStemSeparator(["definitely-not-a-real-binary-xyz"])
     try:
         with pytest.raises(StemSeparationError, match="--separator-cmd"):
@@ -348,9 +358,7 @@ def test_command_comes_from_env_when_not_given(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     script = write_fake_worker(tmp_path, COMPLIANT_WORKER)
-    monkeypatch.setenv(
-        "KARAKARA_SEPARATOR_CMD", f'"{sys.executable}" "{script}"'
-    )
+    monkeypatch.setenv("KARAKARA_SEPARATOR_CMD", f'"{sys.executable}" "{script}"')
 
     separator = SubprocessStemSeparator()
     try:

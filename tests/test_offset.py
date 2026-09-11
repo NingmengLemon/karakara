@@ -129,7 +129,9 @@ def test_keeps_zero_offset_when_lyrics_already_aligned() -> None:
     ],
 )
 def test_estimates_positive_shift_exactly(
-    line_step_s: float, shift_s: float, duration_s: float,
+    line_step_s: float,
+    shift_s: float,
+    duration_s: float,
     phrases: list[tuple[float, float]],
 ) -> None:
     """正偏移（歌词偏早）应被精确估计到窗口精度。"""
@@ -157,7 +159,9 @@ def test_negative_shift_error_stays_within_shortest_phrase(
     整体塌到 0（误差 +2000 ~ +5000ms）；现在误差被压到最短乐句（3 秒）以内。
     """
     audio, lyrics, truth = build_song(
-        duration_s=100, phrases=VARIED_PHRASES, line_step_s=line_step_s,
+        duration_s=100,
+        phrases=VARIED_PHRASES,
+        line_step_s=line_step_s,
         shift_s=shift_s,
     )
 
@@ -174,13 +178,28 @@ def test_presence_curve_marks_only_line_onsets() -> None:
     lyrics = Lyrics.loads("[00:01.000]a\n[00:05.000]b")
 
     presence = _build_lrc_presence_curve(
-        lyrics, 400, 20_000.0, metadata_filter=permissive_filter(),
-        window_ms=WINDOW_MS, onset_ms=300.0,
+        lyrics,
+        400,
+        20_000.0,
+        metadata_filter=permissive_filter(),
+        window_ms=WINDOW_MS,
+        onset_ms=300.0,
     )
 
     # 行首窗 300ms / 窗口 50ms = 6 个窗口
     assert np.flatnonzero(presence).tolist() == [
-        20, 21, 22, 23, 24, 25, 100, 101, 102, 103, 104, 105,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        100,
+        101,
+        102,
+        103,
+        104,
+        105,
     ]
 
 
@@ -188,14 +207,22 @@ def test_presence_curve_skips_metadata_and_out_of_range_lines() -> None:
     """元数据行与超出音频范围的行都不参与（固定分母必须干净）。"""
     lyrics = Lyrics.loads("[00:00.000]作词 : someone\n[00:01.000]a\n[00:05.000]b")
     metadata_filter = MetadataFilter(
-        keywords=["作词"], id3_tags=frozenset(), parenthetical_markers=[],
-        detect_id3_tags=False, detect_parenthetical=False,
-        detect_pure_numbers=False, custom_patterns=[],
+        keywords=["作词"],
+        id3_tags=frozenset(),
+        parenthetical_markers=[],
+        detect_id3_tags=False,
+        detect_parenthetical=False,
+        detect_pure_numbers=False,
+        custom_patterns=[],
     )
 
     presence = _build_lrc_presence_curve(
-        lyrics, 200, 4_000.0, metadata_filter=metadata_filter,
-        window_ms=WINDOW_MS, onset_ms=300.0,
+        lyrics,
+        200,
+        4_000.0,
+        metadata_filter=metadata_filter,
+        window_ms=WINDOW_MS,
+        onset_ms=300.0,
     )
 
     # 只剩 [00:01.000] 一行（[00:05.000] 的起点已在 4 秒音频之外）
@@ -225,9 +252,7 @@ def test_score_returns_neg_inf_when_coverage_too_low() -> None:
     presence[0:6] = 1.0
 
     # 右移 195 个窗口后 6 个行首窗只剩 5 个，低于 0.8 的保留率
-    assert _score_at_offset(energy, presence, 195, total_presence=6.0) == float(
-        "-inf"
-    )
+    assert _score_at_offset(energy, presence, 195, total_presence=6.0) == float("-inf")
 
 
 def test_score_rejects_degenerate_presence() -> None:

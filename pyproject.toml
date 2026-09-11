@@ -32,6 +32,9 @@ warn_return_any = true
 warn_redundant_casts = true
 disallow_untyped_calls = true
 strict_equality = true
+# tmp/ 是 gitignored 的草稿目录（调试产物、已退役脚本、一次性分析脚本），
+# 它不参与类型检查——否则 `mypy .` 会因为随手写的分析脚本而失败。
+exclude = ["tmp"]
 
 
 [tool.ty.src]
@@ -43,12 +46,56 @@ exclude = [
     "scripts/separator_worker.py",
     "scripts/separator_worker_audio_separator.py",
     "scripts/qwen3aligner_server.py",
+    "tmp",
 ]
 
 [tool.ty.rules]
 # 同时挂 mypy 与 ty 时，"这条 type: ignore 多余"不是可执行的信息：一个检查器需要
 # 的抑制注释，另一个常认为多余。抑制注释的治理交给 mypy。
 unused-type-ignore-comment = "ignore"
+
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+extend-exclude = ["tmp", ".venv", "models"]
+
+[tool.ruff.lint]
+# E4/E7/E9 + F 是 ruff 的默认集；其余是真正能抓到东西的现代化规则。
+# 刻意**不**选完整的 "E"：那会带上 E501，而换行宽度交给 ruff format 管
+# （ruff 官方对同时使用 formatter 的项目就是这么建议的）。
+select = [
+    "E4",   # pycodestyle: import
+    "E7",   # pycodestyle: statement
+    "E9",   # pycodestyle: runtime / 语法
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "BLE",  # flake8-blind-except
+    "C4",   # flake8-comprehensions
+    "PYI",  # flake8-pyi
+    "RUF",  # ruff 自带规则
+]
+# RUF001/002/003 是「字符串/注释里出现了易混淆的 Unicode 字符」。本项目是中文项目，
+# 全角标点（，：；（））是刻意的书写风格，不是笔误。
+ignore = ["RUF001", "RUF002", "RUF003"]
+# FastAPI 的依赖注入就是靠「在默认值里调用 File()/Form()/Depends()」，
+# B008 在这类文件上是误报。
+# scripts/ 下的 worker 脚本同样如此（它们要 decorate 路由或读 sys.argv）。
+[tool.ruff.lint.per-file-ignores]
+"scripts/qwen3aligner_server.py" = ["B008"]
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = [
+    "fastapi.File",
+    "fastapi.Form",
+    "fastapi.Depends",
+    "fastapi.Query",
+    "fastapi.Header",
+    "fastapi.Body",
+    "fastapi.Path",
+]
 
 
 [tool.uv.sources]

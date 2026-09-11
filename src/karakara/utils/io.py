@@ -40,7 +40,7 @@ def _decode(
                         frames_np.append(frame.to_ndarray())
             except av.InvalidDataError as e:
                 if skip_invalid:
-                    warnings.warn(f"跳过损坏的音频帧 @ {packet.pts}: {e}")
+                    warnings.warn(f"跳过损坏的音频帧 @ {packet.pts}: {e}", stacklevel=2)
                     continue
                 raise
 
@@ -138,7 +138,7 @@ def save_audio(
             container.mux(packet)
 
 
-def ms2sample(ms: int | float, sample_rate: int = DEFAULT_SAMPLE_RATE) -> int:
+def ms2sample(ms: float, sample_rate: int = DEFAULT_SAMPLE_RATE) -> int:
     return int(ms * sample_rate / 1000)
 
 
