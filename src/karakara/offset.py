@@ -36,6 +36,7 @@ offset.py
 
 from __future__ import annotations
 
+import itertools
 from logging import getLogger
 
 import numpy as np
@@ -116,6 +117,187 @@ def score_vocal_activity(
     if end_window <= start_window:
         return 0.0
     return float(energy[start_window:end_window].mean())
+
+
+def build_line_intervals(
+    lyrics: Lyrics,
+    offset_ms: float,
+    n_windows: int,
+    *,
+    metadata_filter: MetadataFilter,
+    window_ms: float = 50.0,
+) -> NDArray[np.bool_]:
+    """标记「非元数据歌词行所覆盖的窗口」，返回布尔掩码。
+
+    区间取 ``[行 i 起点 + offset, 行 i+1 起点 + offset)``，与 ``core`` 切段送对齐
+    的口径一致；越界部分被裁到 ``[0, n_windows)``。
+    """
+    inside = np.zeros(n_windows, dtype=bool)
+    starts = sorted(
+        line.start
+        for line in lyrics
+        if line.start is not None and not metadata_filter(line.text)
+    )
+    for begin, end in itertools.pairwise(starts):
+        low = max(0, min(int((begin + offset_ms) / window_ms), n_windows - 1))
+        high = max(0, min(int((end + offset_ms) / window_ms), n_windows - 1))
+        if high > low:
+            inside[low : high + 1] = True
+    return inside
+
+
+def score_line_intervals(
+    energy: NDArray[np.float32],
+    lyrics: Lyrics,
+    offset_ms: float,
+    *,
+    metadata_filter: MetadataFilter,
+    window_ms: float = 50.0,
+) -> float | None:
+    """行区间对比度：区间内平均能量 − 区间外平均能量。
+
+    这是与 :func:`estimate_offset` 的内部判据**互补**的第二个统计量：内部判据只看
+    每行的行首窄窗（「这一行是不是从这里开始唱」），本函数看整行区间（「这一段时间
+    里是不是都有人声」）。后者正是下游逐行切段去对齐所依赖的性质。
+
+    两条判据在真实曲目上确实会分歧：实测 3 首里 2 首，估计器偏好的偏移按本判据
+    **比完全不偏移更差**（见 :func:`validate_estimated_offset`）。
+
+    区间覆盖过少或过多时判据没有信息量（例如区间几乎铺满全曲），返回 ``None``。
+    """
+    n_windows = len(energy)
+    if n_windows < 4:
+        return None
+    inside = build_line_intervals(
+        lyrics,
+        offset_ms,
+        n_windows,
+        metadata_filter=metadata_filter,
+        window_ms=window_ms,
+    )
+    n_inside = int(inside.sum())
+    if n_inside < 2 or n_windows - n_inside < 2:
+        return None
+    return float(energy[inside].mean() - energy[~inside].mean())
+
+
+def validate_estimated_offset(
+    energy: NDArray[np.float32],
+    lyrics: Lyrics,
+    offset_ms: float,
+    *,
+    metadata_filter: MetadataFilter,
+    window_ms: float = 50.0,
+) -> tuple[bool, float | None, float | None]:
+    """自动估计出来的偏移是否**真的**优于「一点都不偏移」。
+
+    为什么需要这道闸门：``estimate_offset`` 的打分只看行首窄窗，因此它可能给出一个
+    让行首仍然落在人声里、却把整段行区间推出人声的偏移。三首真实曲目的实测
+    （``UVR_Demucs_Model_1`` 实物分离；「物理真值」= 第一次持续人声出现的位置与
+    第一条歌词行时间戳之差，见 :func:`suggest_offset_from_onset`）：
+
+    ==============  ==========  ==========  ===========
+    曲目             物理真值    onset 判据   interval 判据
+    ==============  ==========  ==========  ===========
+    Saya - 失う      ≈ −1040ms     −4000ms      −1000ms
+    ReoNa - SACRA    ≈   +270ms      +200ms      +4600ms
+    Rick Astley      ≈ +17160ms      −600ms      +7600ms
+    ==============  ==========  ==========  ===========
+
+    两条判据**各自都会错，而且错在不同的歌上**：Saya 上 onset 差 3 秒而 interval
+    很准；SACRA 上 interval 差 4 秒而 onset 很准。所以这道闸门的目的不是「选出正确
+    的偏移」（做不到），而是**在证据不足时不动**——自动偏移宁可不动，也不要动错。
+    手动 ``--offset`` 不受这道闸门影响（用户的显式意图优先）。
+
+    Returns:
+        ``(是否采纳, 不偏移时的对比度, 估计值下的对比度)``。
+        判据退化（无信息量）时返回 ``(True, None, None)``——即信任估计器。
+    """
+    base = score_line_intervals(
+        energy, lyrics, 0.0, metadata_filter=metadata_filter, window_ms=window_ms
+    )
+    candidate = score_line_intervals(
+        energy, lyrics, offset_ms, metadata_filter=metadata_filter, window_ms=window_ms
+    )
+    if base is None or candidate is None:
+        return True, base, candidate
+    return candidate > base, base, candidate
+
+
+#: 默认的「持续人声」判据：能量连续超过峰值这个比例，且至少持续这么多窗口。
+DEFAULT_VOCAL_RELATIVE_THRESHOLD = 0.12
+DEFAULT_VOCAL_MIN_RUN_WINDOWS = 6
+
+#: 能量判据与「首次人声锚点」之间允许的分歧（ms）。超过它说明两者无法调和
+#: ——通常是 LRC 与音频属于不同剪辑，此时**任何**全局常量偏移都是错的。
+#: 2 秒是"量级级"的阈值（锚点本身的精度约 ±0.3s），不是质量门槛。
+DEFAULT_ANCHOR_TOLERANCE_MS = 2000.0
+
+
+def detect_first_vocal_onset(
+    energy: NDArray[np.float32],
+    *,
+    window_ms: float = 50.0,
+    relative_threshold: float = DEFAULT_VOCAL_RELATIVE_THRESHOLD,
+    min_run_windows: int = DEFAULT_VOCAL_MIN_RUN_WINDOWS,
+) -> float | None:
+    """第一次「持续有人声」的时刻（ms），检不出返回 ``None``。
+
+    这个判据只依赖一件事——**人声从哪一刻开始**，不依赖能量判据的形式，因此可以
+    当作 :func:`estimate_offset` 之外的独立锚点。歌曲开头一般先是器乐前奏，所以
+    「第一条歌词行的时间戳」应当落在它附近。
+    """
+    if energy.size == 0:
+        return None
+    threshold = float(energy.max()) * relative_threshold
+    streak = 0
+    for index, value in enumerate(energy):
+        streak = streak + 1 if float(value) > threshold else 0
+        if streak >= min_run_windows:
+            return float(index - min_run_windows + 1) * window_ms
+    return None
+
+
+def first_lyric_timestamp(
+    lyrics: Lyrics, *, metadata_filter: MetadataFilter
+) -> int | None:
+    """第一条**参与对齐**的歌词行的时间戳（ms），没有则 ``None``。"""
+    starts = [
+        line.start
+        for line in lyrics
+        if line.start is not None and line.text and not metadata_filter(line.text)
+    ]
+    return min(starts) if starts else None
+
+
+def suggest_offset_from_onset(
+    lyrics: Lyrics,
+    energy: NDArray[np.float32],
+    *,
+    metadata_filter: MetadataFilter,
+    window_ms: float = 50.0,
+    relative_threshold: float = DEFAULT_VOCAL_RELATIVE_THRESHOLD,
+    min_run_windows: int = DEFAULT_VOCAL_MIN_RUN_WINDOWS,
+) -> float | None:
+    """用「第一条歌词行 ↔ 第一次持续人声」给出的偏移锚点（ms）。
+
+    正负号与 :func:`estimate_offset` 一致：正值表示歌词偏早、需要延后。
+
+    已知偏差来源（因此它只做**粗锚点**，不做精细估计）：副歌前的呼吸/哼唱、
+    第一行之前的无词人声、以及分离残留的伴奏都会被算成「人声已开始」。
+    """
+    first_line = first_lyric_timestamp(lyrics, metadata_filter=metadata_filter)
+    if first_line is None:
+        return None
+    onset = detect_first_vocal_onset(
+        energy,
+        window_ms=window_ms,
+        relative_threshold=relative_threshold,
+        min_run_windows=min_run_windows,
+    )
+    if onset is None:
+        return None
+    return onset - float(first_line)
 
 
 def _build_lrc_presence_curve(
@@ -211,7 +393,7 @@ def _score_at_offset(
     """
     if offset_windows > 0:
         e = energy[offset_windows:]
-        p = presence[: -offset_windows]
+        p = presence[:-offset_windows]
     elif offset_windows < 0:
         k = -offset_windows
         e = energy[:-k]

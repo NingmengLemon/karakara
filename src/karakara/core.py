@@ -6,12 +6,19 @@ from pathlib import Path
 from typing import Literal
 
 from lemony_lrc_parser import BasicLyricLine, LyricLine, Lyrics, LyricToken
-from lemony_lrc_parser.offset import apply_delta, iter_all_timestamps
+from lemony_lrc_parser.offset import apply_delta
 from numpy.typing import NDArray
 
 from karakara.aligner.abc import AbstractAligner, AlignedWord, LangCode
 from karakara.debug import AudioDumper
-from karakara.offset import build_energy_curve, estimate_offset, score_vocal_activity
+from karakara.offset import (
+    DEFAULT_ANCHOR_TOLERANCE_MS,
+    build_energy_curve,
+    estimate_offset,
+    score_vocal_activity,
+    suggest_offset_from_onset,
+    validate_estimated_offset,
+)
 from karakara.preprocess import (
     AudioPreprocessConfig,
     compress_dynamic_range,
@@ -82,6 +89,97 @@ def _preprocess_vocals(
     return vocal_np, sample_rate
 
 
+def _validate_auto_offset(
+    lyrics: Lyrics,
+    energy_curve: NDArray,
+    candidate_ms: float,
+    *,
+    metadata_filter: MetadataFilter,
+    anchor_tolerance_ms: float = DEFAULT_ANCHOR_TOLERANCE_MS,
+) -> float:
+    """校验自动估计出来的偏移：不通过就返回 ``0.0``（不偏移）。
+
+    两道校验互相独立，各自都能单独否决：
+
+    1. **行区间对比度**：估计值必须比「不偏移」更能让整段行区间落在人声里。
+    2. **首次人声锚点**：``第一次持续人声`` 与 ``第一条歌词行`` 之差给出一个物理
+       锚点，它与估计值分歧过大时说明两者无法调和——典型情形是 LRC 与音频属于
+       不同剪辑（实测有一首需要 +17 秒），此时任何全局常量偏移都是错的。
+
+    判据退化（算不出对比度 / 检不出人声）时不否决，交由另一道校验决定。
+    """
+    accepted, base, updated = validate_estimated_offset(
+        energy_curve, lyrics, candidate_ms, metadata_filter=metadata_filter
+    )
+    if not accepted:
+        logger.warning(
+            f"自动偏移估计 {candidate_ms:+.0f}ms 未通过校验"
+            f"（行区间对比度 {updated:.4f} 不优于不偏移的 {base:.4f}），"
+            f"按不偏移处理；如需强制，请显式传 --offset {candidate_ms:+.0f}"
+        )
+        return 0.0
+
+    anchor = suggest_offset_from_onset(
+        lyrics, energy_curve, metadata_filter=metadata_filter
+    )
+    if anchor is not None and abs(anchor - candidate_ms) > anchor_tolerance_ms:
+        logger.warning(
+            f"自动偏移估计 {candidate_ms:+.0f}ms 与「首次持续人声」锚点 "
+            f"{anchor:+.0f}ms 分歧超过 {anchor_tolerance_ms:.0f}ms，按不偏移处理。"
+            f"这通常意味着该 LRC 与音频属于不同剪辑（此时任何全局偏移都不成立），"
+            f"建议用 --dump-dir 检查产物后再用 --offset 手动指定"
+        )
+        return 0.0
+
+    logger.info(
+        f"自动偏移 {candidate_ms:+.0f}ms 通过校验"
+        + (f"（锚点 {anchor:+.0f}ms）" if anchor is not None else "（锚点不可用）")
+    )
+    return candidate_ms
+
+
+def _clamp_negative_timestamps(
+    lyrics: Lyrics, *, metadata_filter: MetadataFilter
+) -> tuple[int, list[int]]:
+    """把所有负时间戳夹到 0，返回 ``(被夹个数, 被夹且参与对齐的行号)``。
+
+    ``lemony-lrc-parser`` 的 ``format_timetag`` 遇到负值直接抛
+    ``TimestampUnderflowError``，所以输出前必须保证时间轴非负。
+
+    "参与对齐的行" 只用于告警：连它们都被夹住，说明偏移估计本身就过大。
+    """
+
+    def clamp_tokens(words: BasicLyricLine) -> int:
+        count = 0
+        for word in words:
+            if word.start is not None and word.start < 0:
+                word.start = 0
+                count += 1
+            if word.end is not None and word.end < 0:
+                word.end = 0
+                count += 1
+        return count
+
+    clamped = 0
+    alignable_lines: list[int] = []
+    for index, line in enumerate(lyrics):
+        line_clamped = 0
+        if line.start < 0:
+            line.start = 0
+            line_clamped += 1
+        if line.end is not None and line.end < 0:
+            line.end = 0
+            line_clamped += 1
+        line_clamped += clamp_tokens(line.content)
+        for reference in line.reference_lines:
+            line_clamped += clamp_tokens(reference)
+        if line_clamped:
+            clamped += line_clamped
+            if line.text and not metadata_filter(line.text):
+                alignable_lines.append(index)
+    return clamped, alignable_lines
+
+
 def _apply_offset(
     lyrics: Lyrics,
     audio: NDArray,
@@ -89,26 +187,62 @@ def _apply_offset(
     *,
     metadata_filter: MetadataFilter,
     offset_ms: float | None,
-) -> None:
-    """估计并就地应用全局时间偏移，必要时避免负时间戳。"""
+    energy_curve: NDArray | None = None,
+) -> float:
+    """估计并就地应用全局时间偏移，返回实际生效的偏移量（ms）。
+
+    三处刻意的行为：
+
+    1. **负时间戳逐个夹到 0**，而不是把整条时间轴回退。回退会让修正彻底失效：
+       LRC 里几乎总有一条 ``[00:00.000]`` 的元数据行（如「作词 : xxx」），它不
+       参与对齐，却会把任何负偏移完整抵消掉——连 ``--offset`` 手动指定的负值也
+       会被静默丢弃（实测：含 0ms 行的文件上 ``--offset -200`` 的净偏移为 0）。
+    2. **自动估计要过两道互相独立的校验**（见下），任一不通过就按不偏移处理：
+       行区间对比度校验（:func:`~karakara.offset.validate_estimated_offset`）与
+       「第一次持续人声」锚点校验（:func:`~karakara.offset.suggest_offset_from_onset`）。
+    3. 手动 ``--offset`` 不受校验约束——用户的显式意图优先。
+
+    为什么自动偏移这么保守：实测三首真实曲目，两条能量判据**各自都会错、且错在
+    不同的歌上**（见 `validate_estimated_offset` 的表格），其中一首 LRC 与音频
+    属于不同剪辑、需要 +17 秒的偏移，任何能量判据都救不回来。自动偏移宁可不动，
+    也不要动错——动错的代价是把整首歌的切段推离人声。
+    """
     applied_offset = offset_ms
     if applied_offset is None:
         applied_offset = estimate_offset(
             audio, lyrics, sample_rate, metadata_filter=metadata_filter
         )
+        if applied_offset != 0 and energy_curve is not None:
+            applied_offset = _validate_auto_offset(
+                lyrics,
+                energy_curve,
+                applied_offset,
+                metadata_filter=metadata_filter,
+            )
     if applied_offset == 0:
-        return
+        return 0.0
 
-    apply_delta(lyrics, int(applied_offset))
-    logger.info(f"Applied global offset: {applied_offset:+.0f}ms")
-    min_ts = min(iter_all_timestamps(lyrics), default=0)
-    if min_ts < 0:
-        apply_delta(lyrics, -min_ts)
-        applied_offset += -min_ts
+    delta = int(applied_offset)
+    apply_delta(lyrics, delta)
+    clamped, alignable_lines = _clamp_negative_timestamps(
+        lyrics, metadata_filter=metadata_filter
+    )
+    logger.info(f"Applied global offset: {delta:+d}ms")
+    if clamped:
         logger.info(
-            f"Shifted by {-min_ts}ms to avoid negative timestamps "
-            f"(final offset={applied_offset:+.0f}ms)"
+            f"Clamped {clamped} negative timestamp(s) to 0 "
+            f"(the offset is kept instead of reverting the whole timeline)"
         )
+    if alignable_lines:
+        # 「偏移估计过大」的信号：参与对齐的行本不该被推出歌外。
+        logger.warning(
+            f"{len(alignable_lines)} line(s) that participate in alignment were "
+            f"pushed before 0ms by offset {delta:+d}ms and clamped: "
+            f"{alignable_lines[:10]}"
+            + (" ..." if len(alignable_lines) > 10 else "")
+            + " — the offset estimate is probably too large"
+        )
+    return float(delta)
 
 
 def _is_byword_line(line: LyricLine) -> bool:
@@ -221,12 +355,16 @@ def _align_line(
     dumper: AudioDumper,
     language: LangCode | None,
 ) -> LyricLine | None:
-    """对单行执行对齐，不能可靠映射时返回 ``None``。"""
+    """对单行执行对齐，不能可靠映射时返回 ``None``。
+
+    这里刻意捕获所有异常：单行失败只应降级为该行保留原样，不该中断整首歌。
+    "整首歌都失败" 由 :func:`_check_alignment_health` 兜住并升级为硬错误。
+    """
     audio_piece = audio
     dumper.dump(f"05_line_{index}", audio_piece, sample_rate)
     try:
         words = aligner.align(audio_piece, text, sample_rate, language=language)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - 见 docstring：逐行降级是设计行为
         logger.error(f"Error occurred while aligning line {index}: {exc}")
         return None
 
@@ -305,16 +443,20 @@ def gen_kara(
     else:
         language = aligner_language
     logger.info(f"aligner language: {language or 'aligner default'}")
+    # 能量曲线只建一次：偏移校验与逐行人声活动度都用它。
+    energy_curve = build_energy_curve(vocal_np, sample_rate)
     _apply_offset(
         working_lyrics,
         vocal_np,
         sample_rate,
         metadata_filter=metadata_filter,
         offset_ms=offset_ms,
+        energy_curve=energy_curve,
     )
-    energy_curve = build_energy_curve(vocal_np, sample_rate)
 
     result = Lyrics(metadata=working_lyrics.metadata)
+    attempted = 0
+    failed = 0
     for index, line in enumerate(working_lyrics):
         text = line.text
         if _should_preserve_line(
@@ -369,5 +511,33 @@ def gen_kara(
             dumper=dumper,
             language=language,
         )
+        attempted += 1
+        if aligned_line is None:
+            failed += 1
         result.append(aligned_line if aligned_line is not None else line.copy())
+
+    _check_alignment_health(attempted=attempted, failed=failed)
     return result
+
+
+def _check_alignment_health(*, attempted: int, failed: int) -> None:
+    """把「整体对齐失效」从静默成功变成显式失败。
+
+    逐行失败是设计好的降级（该行原样保留），但**每一行都失败**只可能是环境问题：
+    对齐服务没起、``--aligner-url`` 指错、服务端与客户端的响应契约不一致……此时
+    若照常返回，调用方会拿到一个内容与输入完全相同、却「生成成功」的文件。实测这个
+    静默失效真实发生过（服务端返回数组而客户端读 ``["words"]``），因此这里直接报错。
+    """
+    if attempted == 0:
+        return
+    if failed == attempted:
+        raise RuntimeError(
+            f"全部 {attempted} 行的对齐都失败了，没有任何一行拿到词级时间戳。"
+            f"这通常不是歌词问题，而是对齐环境问题：请检查对齐服务是否在 "
+            f"--aligner-url 上运行、服务端版本是否与客户端契约一致（见上方日志里的"
+            f"每行错误）。已放弃写盘，避免产出一个「没有词级时间」的假成功文件。"
+        )
+    if attempted >= 4 and failed * 2 >= attempted:
+        logger.warning(
+            f"{failed}/{attempted} 行对齐失败，产物中这些行会保留原样，请检查对齐服务"
+        )
