@@ -29,24 +29,72 @@ def test_discover_batch_jobs_preserves_relative_output_paths(tmp_path: Path) -> 
     _write_pair(nested, "second")
     (tmp_path / "old.kara.lrc").write_text("ignored", encoding="utf-8")
 
-    jobs = main.discover_batch_jobs(tmp_path, tmp_path / "out")
+    result = main.discover_batch_jobs(tmp_path, tmp_path / "out")
 
-    assert [(job.lyrics_path.name, job.audio_path.name) for job in jobs] == [
+    assert result.skipped == []
+    assert [(job.lyrics_path.name, job.audio_path.name) for job in result.jobs] == [
         ("second.lrc", "second.flac"),
         ("first.lrc", "first.flac"),
     ]
-    assert [job.output_path.relative_to(tmp_path / "out") for job in jobs] == [
+    assert [job.output_path.relative_to(tmp_path / "out") for job in result.jobs] == [
         Path("album/second.kara.lrc"),
         Path("first.kara.lrc"),
     ]
 
 
-def test_discover_batch_jobs_rejects_ambiguous_audio(tmp_path: Path) -> None:
+def test_discover_batch_jobs_rejects_ambiguous_audio_in_strict_mode(
+    tmp_path: Path,
+) -> None:
     _write_pair(tmp_path, "song", ".flac")
     (tmp_path / "song.mp3").write_bytes(b"audio")
 
     with pytest.raises(ValueError, match="exactly one audio"):
-        main.discover_batch_jobs(tmp_path)
+        main.discover_batch_jobs(tmp_path, strict=True)
+
+
+def test_discover_batch_jobs_skips_bad_pairs_by_default(tmp_path: Path) -> None:
+    """默认必须宽松：一个坏配对不能拖垮整个曲库。
+
+    回归测试：真实曲库（6622 个 LRC）里有 86 个 LRC 没有同名音频，而此前
+    ``discover_batch_jobs`` 会在第一个这样的文件上抛异常，于是连能配对的
+    6536 首也一首都不会处理。
+    """
+    _write_pair(tmp_path, "good")
+    (tmp_path / "orphan.lrc").write_text("[00:00.00]no audio", encoding="utf-8")
+
+    result = main.discover_batch_jobs(tmp_path)
+
+    assert [job.lyrics_path.name for job in result.jobs] == ["good.lrc"]
+    assert [(item.lyrics_path.name, item.reason) for item in result.skipped] == [
+        ("orphan.lrc", "none")
+    ]
+
+
+def test_discover_batch_jobs_lists_each_directory_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """发现阶段每个目录只枚举一次。
+
+    回归：大曲库里几千个 LRC 常挤在同一个目录，逐行 ``iterdir()`` 会把同一批目录
+    条目重复枚举几百万次——实测某 6600 个 LRC 的真实曲库上，发现阶段因此超过
+    10 分钟未跑完（缓存后 1.8s）。
+    """
+    for index in range(20):
+        _write_pair(tmp_path, f"song{index}")
+
+    calls: list[Path] = []
+    real_iterdir = Path.iterdir
+
+    def counting_iterdir(self: Path) -> object:
+        calls.append(self)
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", counting_iterdir)
+
+    result = main.discover_batch_jobs(tmp_path)
+
+    assert len(result.jobs) == 20
+    assert calls.count(tmp_path) == 1
 
 
 def test_run_batch_reuses_workers_and_releases_after_each_job(
@@ -86,35 +134,43 @@ def test_run_batch_reuses_workers_and_releases_after_each_job(
     )
     monkeypatch.setattr(main, "release_item_resources", lambda: released.append(None))
 
-    args = argparse.Namespace(
-        batch_dir=tmp_path,
-        output_dir=None,
-        dump_dir=None,
-        sep_work_dir=None,
-        no_normalize=False,
-        no_vibrato_suppress=False,
-        compress=False,
-        aligner_url="http://test",
-        aligner_language="auto",
-        target_lang=None,
-        separator_cmd=None,
-        separator_backend="demucs",
-        separator_model=None,
-        separator_device=None,
-        separator_model_dir=None,
-        separator_timeout=None,
-        fail_fast=False,
-        no_offset_estimate=True,
-        offset=None,
-        min_vocal_activity=0.01,
-        existing_byword_policy="realign",
-    )
-
-    assert main.run_batch(args) == 0
+    assert main.run_batch(_batch_args(tmp_path)) == 0
     assert len(processed) == 2
     assert len(released) == 2
     assert len(created_aligners) == 1
     assert len(created_separators) == 1
+
+
+def _batch_args(batch_dir: Path, **overrides: object) -> argparse.Namespace:
+    """构造 ``run_batch`` 需要的 CLI 命名空间（字段与 build_parser() 对齐）。"""
+    base: dict[str, object] = {
+        "batch_dir": batch_dir,
+        "output_dir": None,
+        "dump_dir": None,
+        "sep_work_dir": None,
+        "no_normalize": False,
+        "no_vibrato_suppress": False,
+        "compress": False,
+        "aligner_url": "http://test",
+        "aligner_timeout": 120.0,
+        "aligner_language": "auto",
+        "target_lang": None,
+        "metadata_filter": Path("metadata_filter.toml"),
+        "strict_pairs": False,
+        "separator_cmd": None,
+        "separator_backend": "demucs",
+        "separator_model": None,
+        "separator_device": None,
+        "separator_model_dir": None,
+        "separator_timeout": 900.0,
+        "fail_fast": False,
+        "no_offset_estimate": True,
+        "offset": None,
+        "min_vocal_activity": 0.01,
+        "existing_byword_policy": "realign",
+    }
+    base.update(overrides)
+    return argparse.Namespace(**base)
 
 
 def _separator_args(**overrides: object) -> argparse.Namespace:

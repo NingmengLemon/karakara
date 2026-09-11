@@ -26,6 +26,11 @@ _SHUTDOWN_TIMEOUT_S = 10.0
 #: 启动 worker 时允许的最大等待秒数（仅用于校验进程是否立刻退出）。
 _STARTUP_GRACE_S = 0.5
 
+#: 单次分离请求的默认超时（秒）。默认**有限**是刻意的：worker 卡住（显存异常、
+#: 后端死锁）时，宁可报一个可读的超时错误，也不要让批处理永久挂住。
+#: 取值要留足首次运行的时间——第一次会由 uv 准备 worker 环境并加载模型。
+DEFAULT_REQUEST_TIMEOUT_S = 900.0
+
 #: 给 uv 管理的 worker 使用的默认命令。
 DEFAULT_WORKER_SCRIPT = Path("scripts/separator_worker.py")
 
@@ -116,7 +121,7 @@ class SubprocessStemSeparator(AbstractStemSeparator):
         device: str | None = None,
         model_dir: str | Path | None = None,
         stems: Sequence[str] | None = None,
-        request_timeout: float | None = None,
+        request_timeout: float | None = DEFAULT_REQUEST_TIMEOUT_S,
         extra_env: Mapping[str, str] | None = None,
     ) -> None:
         """
@@ -127,7 +132,8 @@ class SubprocessStemSeparator(AbstractStemSeparator):
             device: 传给 worker 的设备；``None`` 用 worker 自身默认值。
             model_dir: 模型仓库目录；``None`` 用 worker 自身默认值。
             stems: 默认只保留这些音轨。``None`` 表示 worker 自行决定。
-            request_timeout: 单次分离请求的超时秒数；``None`` 表示不超时。
+            request_timeout: 单次分离请求的超时秒数；``None`` 表示不超时
+                （默认 :data:`DEFAULT_REQUEST_TIMEOUT_S`）。
             extra_env: 追加到 worker 环境变量上的额外项。
         """
         env_command = os.environ.get("KARAKARA_SEPARATOR_CMD")
@@ -257,7 +263,9 @@ class SubprocessStemSeparator(AbstractStemSeparator):
         except subprocess.TimeoutExpired:
             return process.poll()
 
-    def _request(self, payload: dict[str, Any], timeout: float | None) -> dict[str, Any]:
+    def _request(
+        self, payload: dict[str, Any], timeout: float | None
+    ) -> dict[str, Any]:
         assert self._process is not None
         assert self._process.stdin is not None
         assert self._reader is not None

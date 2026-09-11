@@ -24,6 +24,10 @@ _SEPARATOR_WORKERS = {
     "audio-separator": "scripts/separator_worker_audio_separator.py",
 }
 
+#: 仓库自带的元数据过滤配置。刻意相对**本文件**定位而不是 CWD，
+#: 否则从别的目录运行就会去找那个目录下的同名文件（然后 FileNotFoundError）。
+_DEFAULT_METADATA_FILTER = Path(__file__).resolve().parent / "metadata_filter.toml"
+
 
 @dataclass(frozen=True)
 class BatchJob:
@@ -126,7 +130,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--aligner-url",
         default="http://localhost:8787",
-        help="Qwen3ForcedAligner 服务地址（默认: http://localhost:8787）",
+        help=(
+            "Qwen3ForcedAligner 服务地址（默认: http://localhost:8787，"
+            "与 scripts/qwen3aligner_server.py 的默认监听端口一致）"
+        ),
+    )
+    parser.add_argument(
+        "--aligner-timeout",
+        type=float,
+        default=120.0,
+        help="单次对齐请求超时秒数（默认: 120；0 或负数表示不超时）",
+    )
+    parser.add_argument(
+        "--metadata-filter",
+        type=Path,
+        default=_DEFAULT_METADATA_FILTER,
+        help=f"元数据行过滤配置（默认: {_DEFAULT_METADATA_FILTER.name}，随本文件定位）",
+    )
+    parser.add_argument(
+        "--strict-pairs",
+        action="store_true",
+        help="批处理时遇到无法配对的 LRC 立即失败（默认跳过并汇总）",
     )
     parser.add_argument(
         "--aligner-language",
@@ -208,8 +232,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--separator-timeout",
         type=float,
-        default=None,
-        help="单次分离请求超时秒数（默认不限时）",
+        default=900.0,
+        help=(
+            "单次分离请求超时秒数（默认: 900）。默认有限是刻意的：批处理里一个卡住的"
+            "worker 不该让主程序永久挂住。首次运行还要等 uv 准备 worker 环境，"
+            "必要时把它调大；0 或负数表示不超时"
+        ),
     )
     parser.add_argument(
         "--sep-work-dir",
@@ -225,44 +253,83 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+@dataclass(frozen=True)
+class UnpairedLyrics:
+    """一个找不到唯一同名音频、因而无法处理的 LRC。"""
+
+    lyrics_path: Path
+    reason: str
+
+
+@dataclass(frozen=True)
+class DiscoveryResult:
+    """批处理发现的结果：可处理的配对 + 被跳过的 LRC。"""
+
+    jobs: list[BatchJob]
+    skipped: list[UnpairedLyrics]
+
+
 def discover_batch_jobs(
-    input_dir: Path, output_dir: Path | None = None
-) -> list[BatchJob]:
+    input_dir: Path,
+    output_dir: Path | None = None,
+    *,
+    strict: bool = False,
+) -> DiscoveryResult:
     """递归发现同目录、同文件名的 LRC/音频对。
 
-    已生成的 ``*.kara.lrc`` 会被排除。找不到音频或同名音频不唯一时抛出
-    ``ValueError``，避免批处理时错误地配对文件。
+    已生成的 ``*.kara.lrc`` 会被排除。找不到音频或同名音频不唯一的 LRC 默认
+    **跳过并汇总**（``strict=True`` 时改为直接抛 ``ValueError``）。
+
+    默认必须宽松：真实曲库里总会有少量 LRC 没有配套音频（人工泄漏、翻译稿、
+    只有 instrumental 等）。实测在 6622 首的曲库上有 86 个这样的文件——若按
+    「一个坏配对就抛异常」，整个批处理连能配对的 6536 首都不会处理。
     """
     if not input_dir.is_dir():
         raise ValueError(f"batch directory does not exist: {input_dir}")
 
+    # 每个目录只枚举一次：大曲库里几千个 LRC 常挤在少数几个目录（实测某曲库
+    # 6600+ 个 LRC 集中在 ~1000 文件级的根目录），逐行 iterdir() 会把同一批目录
+    # 条目重复枚举几百万次，Windows 上足以让「发现阶段」从秒级涨到分钟级。
+    audio_index: dict[Path, dict[str, list[Path]]] = {}
+
+    def audio_by_stem(directory: Path) -> dict[str, list[Path]]:
+        index = audio_index.get(directory)
+        if index is None:
+            index = {}
+            for entry in directory.iterdir():
+                if entry.is_file() and entry.suffix.lower() in _AUDIO_SUFFIXES:
+                    index.setdefault(entry.stem, []).append(entry)
+            for paths in index.values():
+                paths.sort()
+            audio_index[directory] = index
+        return index
+
     jobs: list[BatchJob] = []
+    skipped: list[UnpairedLyrics] = []
     for lyrics_path in sorted(input_dir.rglob("*.lrc")):
         if lyrics_path.stem.endswith(".kara"):
             continue
-        candidates = sorted(
-            path
-            for path in lyrics_path.parent.iterdir()
-            if path.is_file()
-            and path.stem == lyrics_path.stem
-            and path.suffix.lower() in _AUDIO_SUFFIXES
-        )
+        candidates = audio_by_stem(lyrics_path.parent).get(lyrics_path.stem, [])
         if len(candidates) != 1:
             description = (
                 "none"
                 if not candidates
                 else ", ".join(str(path) for path in candidates)
             )
-            raise ValueError(
-                f"Expected exactly one audio file for {lyrics_path}, found: {description}"
-            )
+            if strict:
+                raise ValueError(
+                    f"Expected exactly one audio file for {lyrics_path}, "
+                    f"found: {description}"
+                )
+            skipped.append(UnpairedLyrics(lyrics_path, description))
+            continue
         if output_dir is None:
             output_path = lyrics_path.with_suffix(".kara.lrc")
         else:
             relative = lyrics_path.relative_to(input_dir)
             output_path = output_dir / relative.with_suffix(".kara.lrc")
         jobs.append(BatchJob(lyrics_path, candidates[0], output_path))
-    return jobs
+    return DiscoveryResult(jobs=jobs, skipped=skipped)
 
 
 def save_lyrics(lyrics: Lyrics, output_path: Path) -> None:
@@ -294,7 +361,7 @@ def build_separator(args: argparse.Namespace) -> SubprocessStemSeparator:
         model=args.separator_model,
         device=args.separator_device,
         model_dir=args.separator_model_dir,
-        request_timeout=args.separator_timeout,
+        request_timeout=_resolve_timeout(args.separator_timeout),
     )
 
 
@@ -350,12 +417,30 @@ def resolve_offset(args: argparse.Namespace) -> float | None:
     return offset if isinstance(offset, float) else None
 
 
+def _resolve_timeout(value: float | None) -> float | None:
+    """把 CLI 的超时值转成 ``requests``/``Popen`` 语义：``<=0`` 表示不超时。"""
+    if value is None or value <= 0:
+        return None
+    return value
+
+
 def run_batch(args: argparse.Namespace) -> int:
     """批量执行任务，共享模型和 HTTP 客户端，逐项回收临时对象。"""
     assert args.batch_dir is not None
     input_dir = args.batch_dir.resolve()
     output_dir = args.output_dir.resolve() if args.output_dir is not None else None
-    jobs = discover_batch_jobs(input_dir, output_dir)
+    discovery = discover_batch_jobs(input_dir, output_dir, strict=args.strict_pairs)
+    jobs = discovery.jobs
+    if discovery.skipped:
+        print(
+            f"Skipped {len(discovery.skipped)} LRC file(s) without a unique "
+            f"same-name audio (use --strict-pairs to fail instead):"
+        )
+        for item in discovery.skipped[:10]:
+            relative = item.lyrics_path.relative_to(input_dir)
+            print(f"  - {relative} (found: {item.reason})")
+        if len(discovery.skipped) > 10:
+            print(f"  ... and {len(discovery.skipped) - 10} more")
     if not jobs:
         print(f"No matching LRC/audio pairs found under: {input_dir}")
         return 0
@@ -365,8 +450,10 @@ def run_batch(args: argparse.Namespace) -> int:
         suppress_vibrato=not args.no_vibrato_suppress,
         compress=args.compress,
     )
-    metadata_filter = MetadataFilter.from_file("metadata_filter.toml")
-    aligner = Qwen3ForcedAligner(base_url=args.aligner_url)
+    metadata_filter = MetadataFilter.from_file(args.metadata_filter)
+    aligner = Qwen3ForcedAligner(
+        base_url=args.aligner_url, timeout=_resolve_timeout(args.aligner_timeout)
+    )
     separator = build_separator(args)
     failures = 0
     try:
@@ -429,14 +516,16 @@ def run_single(args: argparse.Namespace) -> int:
         suppress_vibrato=not args.no_vibrato_suppress,
         compress=args.compress,
     )
-    aligner = Qwen3ForcedAligner(base_url=args.aligner_url)
+    aligner = Qwen3ForcedAligner(
+        base_url=args.aligner_url, timeout=_resolve_timeout(args.aligner_timeout)
+    )
     separator = build_separator(args)
     try:
         process_job(
             job,
             aligner=aligner,
             separator=separator,
-            metadata_filter=MetadataFilter.from_file("metadata_filter.toml"),
+            metadata_filter=MetadataFilter.from_file(args.metadata_filter),
             preprocess_config=preprocess_config,
             dump_dir=args.dump_dir,
             separate_work_dir=args.sep_work_dir,

@@ -64,7 +64,9 @@ _STEM_KEYWORDS: tuple[tuple[str, str], ...] = (
 #: 支持 ``--list-filter`` 的音轨名（audio-separator 的取值）。
 LIST_FILTERS = ("vocals", "instrumental", "drums", "bass", "guitar", "piano", "other")
 
-DEFAULT_MODEL_DIR = Path("models/sep-audio-separator")
+#: 默认模型目录。与 separator_worker.py 一样按**项目根目录**定位，而不是 CWD：
+#: worker 是被主程序以继承来的工作目录拉起的，用相对路径会在别的目录下找错地方。
+DEFAULT_MODEL_DIR = PROJECT_ROOT / "models" / "sep-audio-separator"
 
 
 def classify_stem(filename: str) -> str | None:
@@ -122,7 +124,10 @@ def prepare_float32_input(audio: Path, work_dir: Path) -> Path:
     sf.write(str(target), data.T, int(sample_rate), format="WAV", subtype="FLOAT")
     LOGGER.info(
         "把输入转成 32 位浮点以保留位深: %s -> %s (%dHz, %dch)",
-        audio.name, target.name, int(sample_rate), data.shape[0],
+        audio.name,
+        target.name,
+        int(sample_rate),
+        data.shape[0],
     )
     return target
 
@@ -239,7 +244,9 @@ class AudioSeparatorBackend:
         separator = self._make_separator(resolved_dir, out_dir, stems)
 
         LOGGER.info(
-            "loading audio-separator model: model=%s dir=%s", resolved_model, resolved_dir
+            "loading audio-separator model: model=%s dir=%s",
+            resolved_model,
+            resolved_dir,
         )
         loaded = separator.load_model(model_filename=resolved_model)
         LOGGER.info("model loaded: %s", loaded or resolved_model)
@@ -280,7 +287,9 @@ class AudioSeparatorBackend:
         local_files: list[str] = []
         if resolved_dir.is_dir():
             local_files = sorted(
-                p.name for p in resolved_dir.iterdir() if p.suffix.lower() in {".onnx", ".pth", ".ckpt", ".yaml", ".th"}
+                p.name
+                for p in resolved_dir.iterdir()
+                if p.suffix.lower() in {".onnx", ".pth", ".ckpt", ".yaml", ".th"}
             )
         payload: dict[str, Any] = {
             "backend": self.name,
@@ -422,7 +431,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--model", default=None, help="默认模型文件名")
     parser.add_argument(
-        "--model-dir", default=None, help="扁平的模型目录（缺省 models/sep-audio-separator）"
+        "--model-dir",
+        default=None,
+        help="扁平的模型目录（缺省 models/sep-audio-separator）",
     )
     parser.add_argument(
         "--info", action="store_true", help="打印后端信息后退出（自检用）"
