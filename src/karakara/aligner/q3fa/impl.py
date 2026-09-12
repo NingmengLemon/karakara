@@ -68,8 +68,14 @@ def extract_words(response: Any) -> list[Q3FAAlignedWord]:
     )
 
 
-class Qwen3ForcedAligner(AbstractAligner):
-    """基于 Qwen3-ForcedAligner 服务的对齐器实现。"""
+class HttpAligner(AbstractAligner):
+    """通过 HTTP `/align` 契约访问对齐服务的适配器。
+
+    模块路径里的 ``q3fa`` 是历史名字：这个适配器**不绑定具体后端**——Qwen3-ForcedAligner
+    与 HubertFA 的服务提供同一套契约（音频 + 文本 + 语言 → 逐单元 `(text, start, end)`），
+    由 ``main.py --aligner-backend`` 决定连哪个端口。旧类名 :class:`Qwen3ForcedAligner`
+    保留为别名。
+    """
 
     def __init__(
         self,
@@ -141,3 +147,7 @@ class Qwen3ForcedAligner(AbstractAligner):
                 )
             )
         return result
+
+
+#: 旧类名（这个适配器最初只为 Qwen3-ForcedAligner 服务而写）。
+Qwen3ForcedAligner = HttpAligner

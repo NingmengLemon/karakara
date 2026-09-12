@@ -9,7 +9,7 @@ from typing import Literal
 
 from lemony_lrc_parser import Lyrics, SerializationOptions
 
-from karakara.aligner import Qwen3ForcedAligner
+from karakara.aligner import HttpAligner
 from karakara.core import ExistingBywordPolicy, gen_kara
 from karakara.logging import setup_logging
 from karakara.preprocess import AudioPreprocessConfig
@@ -22,6 +22,17 @@ _AUDIO_SUFFIXES = frozenset({".wav", ".mp3", ".flac", ".m4a"})
 _SEPARATOR_WORKERS = {
     "demucs": "scripts/separator_worker.py",
     "audio-separator": "scripts/separator_worker_audio_separator.py",
+}
+
+#: 对齐后端 → (服务脚本, 默认地址)。两者提供**同一套 `/align` 契约**，所以主程序
+#: 只认地址、不认后端：换后端 = 换个端口，代码路径完全一致。
+#:
+#: * ``hfa``  —— HuberFA（歌声专用，10ms 帧，逐字/逐词都有真实时长）。实测在
+#:   Qwen 把歌词压扁的行上是对的，见 docs/aligner-backends.md §9。
+#: * ``qwen3``—— Qwen3-ForcedAligner（多语言通用，边界量化在 80ms，零长度词多）。
+_ALIGNER_BACKENDS: dict[str, tuple[str, str]] = {
+    "hfa": ("scripts/hubertfa_aligner_server.py", "http://127.0.0.1:8788"),
+    "qwen3": ("scripts/qwen3aligner_server.py", "http://127.0.0.1:8787"),
 }
 
 #: 仓库自带的元数据过滤配置。刻意相对**本文件**定位而不是 CWD，
@@ -128,11 +139,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="禁用自动偏移估计（相当于 --offset 0）",
     )
     parser.add_argument(
-        "--aligner-url",
-        default="http://localhost:8787",
+        "--aligner-backend",
+        choices=tuple(_ALIGNER_BACKENDS),
+        default="hfa",
         help=(
-            "Qwen3ForcedAligner 服务地址（默认: http://localhost:8787，"
-            "与 scripts/qwen3aligner_server.py 的默认监听端口一致）"
+            "对齐后端（默认: hfa）。两者是独立服务、共用同一套 /align 契约："
+            "hfa=HubertFA（歌声专用，10ms 帧，实测在 Qwen 压扁歌词的行上更准）；"
+            "qwen3=Qwen3-ForcedAligner（多语言通用，80ms 量化、零长度词多）"
+        ),
+    )
+    parser.add_argument(
+        "--aligner-url",
+        default=None,
+        help=(
+            "对齐服务地址；缺省按 --aligner-backend 选（hfa → http://127.0.0.1:8788，"
+            "qwen3 → http://localhost:8787）"
         ),
     )
     parser.add_argument(
@@ -378,7 +399,7 @@ def build_separator(args: argparse.Namespace) -> SubprocessStemSeparator:
 def process_job(
     job: BatchJob,
     *,
-    aligner: Qwen3ForcedAligner,
+    aligner: HttpAligner,
     separator: SubprocessStemSeparator,
     metadata_filter: MetadataFilter,
     preprocess_config: AudioPreprocessConfig,
@@ -436,6 +457,13 @@ def _resolve_timeout(value: float | None) -> float | None:
     return value
 
 
+def resolve_aligner_url(args: argparse.Namespace) -> str:
+    """对齐服务地址：``--aligner-url`` 优先，否则按 ``--aligner-backend`` 取默认值。"""
+    if args.aligner_url:
+        return str(args.aligner_url)
+    return _ALIGNER_BACKENDS[args.aligner_backend][1]
+
+
 def run_batch(args: argparse.Namespace) -> int:
     """批量执行任务，共享模型和 HTTP 客户端，逐项回收临时对象。"""
     assert args.batch_dir is not None
@@ -463,8 +491,9 @@ def run_batch(args: argparse.Namespace) -> int:
         compress=args.compress,
     )
     metadata_filter = MetadataFilter.from_file(args.metadata_filter)
-    aligner = Qwen3ForcedAligner(
-        base_url=args.aligner_url, timeout=_resolve_timeout(args.aligner_timeout)
+    aligner = HttpAligner(
+        base_url=resolve_aligner_url(args),
+        timeout=_resolve_timeout(args.aligner_timeout),
     )
     separator = build_separator(args)
     failures = 0
@@ -529,8 +558,9 @@ def run_single(args: argparse.Namespace) -> int:
         suppress_vibrato=not args.no_vibrato_suppress,
         compress=args.compress,
     )
-    aligner = Qwen3ForcedAligner(
-        base_url=args.aligner_url, timeout=_resolve_timeout(args.aligner_timeout)
+    aligner = HttpAligner(
+        base_url=resolve_aligner_url(args),
+        timeout=_resolve_timeout(args.aligner_timeout),
     )
     separator = build_separator(args)
     try:

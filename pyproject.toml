@@ -32,9 +32,11 @@ warn_return_any = true
 warn_redundant_casts = true
 disallow_untyped_calls = true
 strict_equality = true
-# tmp/ 是 gitignored 的草稿目录（调试产物、已退役脚本、一次性分析脚本），
-# 它不参与类型检查——否则 `mypy .` 会因为随手写的分析脚本而失败。
-exclude = ["tmp"]
+# tmp/ 是 gitignored 的草稿目录（调试产物、已退役脚本、一次性分析脚本）；
+# models/ 放的是模型权重与**第三方上游代码快照**（例如 HubertFA 的 upstream/）。
+# 两者都不是本仓库的源码，不参与类型检查——否则 `mypy .` 会被几百条第三方代码的
+# 报错淹掉。
+exclude = ["tmp", "models"]
 
 
 [tool.ty.src]
@@ -46,7 +48,9 @@ exclude = [
     "scripts/separator_worker.py",
     "scripts/separator_worker_audio_separator.py",
     "scripts/qwen3aligner_server.py",
+    "scripts/hubertfa_aligner_server.py",
     "tmp",
+    "models",
 ]
 
 [tool.ty.rules]

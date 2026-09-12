@@ -126,7 +126,7 @@ def test_run_batch_reuses_workers_and_releases_after_each_job(
         created_separators.append(separator)
         return separator
 
-    monkeypatch.setattr(main, "Qwen3ForcedAligner", FakeAligner)
+    monkeypatch.setattr(main, "HttpAligner", FakeAligner)
     monkeypatch.setattr(main, "SubprocessStemSeparator", create_separator)
     monkeypatch.setattr(main.MetadataFilter, "from_file", lambda _path: object())
     monkeypatch.setattr(
@@ -152,6 +152,7 @@ def _batch_args(batch_dir: Path, **overrides: object) -> argparse.Namespace:
         "no_vibrato_suppress": False,
         "compress": False,
         "aligner_url": "http://test",
+        "aligner_backend": "hfa",
         "aligner_timeout": 120.0,
         "aligner_language": "auto",
         "target_lang": None,

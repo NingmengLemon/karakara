@@ -1,13 +1,28 @@
-# 对齐服务（Qwen3-ForcedAligner）
+# 对齐服务
+
+有两个后端，**提供同一套 `/align` 契约**（音频 + 文本 + 语言 → 逐单元 `(text, start, end)`），
+所以主程序只认地址、不认后端：换后端 = 换端口。
+
+| 后端 | 脚本 | 默认端口 | 说明 |
+|---|---|---|---|
+| **`hfa`（默认）** | `scripts/hubertfa_aligner_server.py` | 8788 | HubertFA（**为歌声训练**，ONNX，10ms 帧）。逐单元有真实时长，并显式标出呼吸音/静音 |
+| `qwen3` | `scripts/qwen3aligner_server.py` | 8787 | Qwen3-ForcedAligner（多语言通用，边界量化在 80ms，零长度词多） |
 
 ```bash
-uv run --script scripts/qwen3aligner_server.py                 # 127.0.0.1:8787
-uv run --script scripts/qwen3aligner_server.py --port 9000
-uv run --script scripts/qwen3aligner_server.py --host 0.0.0.0  # 跨机（服务无鉴权！）
-uv run --script scripts/qwen3aligner_server.py --device cpu    # 强制设备
+# 默认后端
+uv run --script scripts/hubertfa_aligner_server.py            # 127.0.0.1:8788，可加 --preload
+# 可选后端
+uv run --script scripts/qwen3aligner_server.py                # 127.0.0.1:8787
+uv run main.py -l song.lrc -a song.flac --aligner-backend qwen3   # 切回 Qwen
+uv run main.py ... --aligner-url http://other-host:9000           # 或直接指地址
 ```
 
-默认监听 `127.0.0.1:8787`，与 `main.py --aligner-url` 的默认值一致，所以从仓库根目录按第一条命令启动后主程序不需要任何额外参数。模型路径按脚本所在仓库根目录定位，不依赖 CWD。
+**为什么默认给 HubertFA**：人耳裁决的一例（`docs/aligner-backends.md` §9.6）显示，
+在 Qwen 把 13 秒演唱压进 2 秒的那类行上 HubertFA 是对的；同一首歌上词级时间覆盖率
+100% vs 77%，零长度单元 0% vs 41.8%。代价与已知限制（促音被丢、汉字读音靠猜）见该文档。
+
+HubertFA 需要 `Qwen3-ForcedAligner-0.6B` 之外的模型与词典，放在 `models/aligner/HubertFA/`
+（`models/` 不进仓库，来源与下载命令见该目录的 `SOURCE.md`）；缺失时服务会返回明确的 503。
 
 ## 响应形状是契约的一部分
 

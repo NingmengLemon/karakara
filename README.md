@@ -21,8 +21,9 @@
 ## 快速开始
 
 ```bash
-# ① 先起对齐服务（默认 127.0.0.1:8787，与 --aligner-url 默认值一致）
-uv run --script scripts/qwen3aligner_server.py
+# ① 先起对齐服务（默认后端 hfa → 127.0.0.1:8788；换 qwen3 见下）
+uv run --script scripts/hubertfa_aligner_server.py
+# 用旧的 Qwen3 后端： uv run --script scripts/qwen3aligner_server.py --aligner-backend qwen3
 
 # ② 单文件
 uv run main.py -l song.lrc -a song.flac -o song.kara.lrc
@@ -49,7 +50,8 @@ uv run --script scripts/separator_worker_audio_separator.py --list-models
 | `--separator-device`、`--separator-model-dir` | 分离设备（如 `cuda:0` / `cpu`）、模型仓库目录 |
 | `--separator-timeout` | 单次分离请求超时（默认 900s，`0` = 不限） |
 | `--separator-cmd` / `KARAKARA_SEPARATOR_CMD` | 用自己的解释器跑 worker（跳过 uv 环境准备） |
-| `--aligner-url` / `--aligner-timeout` | 对齐服务地址（默认 8787）/ 单次请求超时（默认 120s，`0` = 不限） |
+| `--aligner-backend {hfa,qwen3}` | 用哪个对齐后端；默认 **hfa**（歌声专用，10ms 帧）。两者是独立服务、共用同一套 `/align` 契约 |
+| `--aligner-url` / `--aligner-timeout` | 对齐服务地址（缺省按后端：hfa→8788、qwen3→8787）/ 单次请求超时（默认 120s，`0` = 不限） |
 | `--aligner-language {auto,zh,ja,en,...}` / `--target-lang` | 送给对齐器的语言 / 只对齐该语言的行 |
 | `--offset` / `--no-offset-estimate` | 手动全局偏移（ms）/ 完全不偏移 |
 | `--min-vocal-activity` | 低于该归一化人声活动度的行不对齐（默认 0.01） |
