@@ -196,7 +196,9 @@
 
 ## 5. 推荐排序 + 各自的最小验证实验
 
-> 所有实验都应复用同一批输入：同一首歌、同一份分离人声、同一份行切分、同一份行文本。中间产物写到 `tmp\aligner_research_*`。
+> **⚠️ 排序已经被实证推翻了：见 §9。** 2026-09-13 补做的验证显示，**"是不是为歌声训练"才是决定性因素**，而不是架构（CTC / 离散时间槽）：朗读训练的 wav2vec2 CTC 在歌声片段上完全退化（99.5% 的音素只占 1 帧、覆盖率 2.5%、贪心转写是乱码），而歌声训练的 HubertFA 在同一类材料上给出连续、可用的区间（零长度 0%、覆盖率 80%）。所以**实际优先级应是 HubertFA（及同源的 SOFA 系）> WhisperX/自建 CTC**。
+>
+> 所有实验都应复用同一批输入：同一首歌、同一份分离人声、同一份行切分、同一份行文本。中间产物写到 `tmp\aligner_research_*` 或 `tmp\*_eval`。
 
 ### ① WhisperX align-only（首选：改动最小、许可最干净、字级）
 
@@ -312,4 +314,96 @@ runtime_s_total, runtime_s_per_segment, cold_start_s
 | V3 | WhisperX align-only（ja 字级模型）跑同一批 6 首歌 | 零长度率 vs 现状 22.5%（重点看「蒲公英」41.8%）；边界栅格是否 20ms；锚定误差 |
 | V4 | §6.3-C2 扰动测试（±100ms padding / 混音 vs 分离 / 删一个字） | 行内边界漂移中位数 < 1 个帧移（10/20ms）视为稳定 |
 | V5 | 手工标注 1 行（Vlabeler/Praat）算 BER/IOU | 与 STARS 论文的 MFA 40.3 / SOFA 20.9 同口径对照——**唯一能证明"更准"的证据** |
+
+---
+
+## 9. 追加验证（2026-09-13）：V1、V3 已做，结论反转
+
+### 9.0 下载通道（原本卡住的唯一原因）
+
+模型下载慢是**通道**问题，不是墙：实测同一份 GitHub Releases 资产
+
+| 通道 | 速度 |
+|---|---|
+| 直连 GitHub | **47 KB/s** |
+| 本地代理 `http://127.0.0.1:7890` | 94 KB/s |
+| `ghfast.top/<原 URL>` | 4.6 MB/s |
+| **`gh-proxy.com/<原 URL>`** | **23 MB/s**（256MB 模型 11 秒下完） |
+
+HuggingFace 直连本次实测 **7.8 MB/s**（早先的 0.65 MB/s 是瞬时波动），`hf-mirror.com` 3.0 MB/s，代理 3.7 MB/s。→ **HF 走直连、GitHub 走 gh-proxy.com** 是当前最省事的组合。
+
+### 9.1 V3 的变体：「换成 20ms 的 CTC 就该更好」——**错了**
+
+按 §6.2 的四条硬性可比条件，用**同一首歌（蒲公英）、同一批 17 个行片段**跑了两条路：
+
+| 指标 | Qwen3-ForcedAligner（现状） | wav2vec2 CTC ja（`jonatasgrosman/…-japanese`，20ms 帧） |
+|---|---|---|
+| 单元数 | 141（nagisa 词级） | 211（字级） |
+| 零长度 (<10ms) | 59（41.8%） | **0（0.0%）** |
+| 恰好 1 帧的单元 | — | **210 / 211（99.5%）** |
+| 单元跨度之和 ÷ 片段时长 | 49.5% | **2.5%** |
+| 最小非零跨度 | 80ms | 20ms |
+
+**那个 0% 零长度是假象**：CTC 把每个字都放在**单帧**上、其余全是 blank，于是"零长度"消失了、"时长"也一起消失了（覆盖率 2.5%）。再往下查一层——**模型在这些歌声片段上根本听不出内容**：
+
+| 参考 | 贪心转写（模型听到的） | blank 占比 |
+|---|---|---|
+| `土の色　花が魅せた世界` | `水中のいルカダーダーミスーンャートャた` | 93.1% |
+| `高く遠く羽を伸ばし届けと放つ種` | `入ターカャクタ空花ボのバ子糸がケト庭` | 96.7% |
+| `風の中　空が背を押す` | `非グラーのかそラーが末こををます` | 94.6% |
+
+→ **朗读数据训练的模型对歌唱无能为力**，这正是 §0 第 5 条与 STARS 论文警告的情形。**如果只看"零长度率"，这个后端会被误判为巨大改进。**
+
+（本次踩到两个实现坑，记下来免得复现时再花时间：① 输入必须**重采样到 16kHz** 再送模型——喂 44.1kHz 会让帧数多出 2.76 倍；② 必须过 `processor.feature_extractor` 做零均值/单位方差归一化，直接喂裸波形会让 emission 变成噪声、Viterbi 退化成"每字一帧"。）
+
+### 9.2 V1：HubertFA（歌声专用）在中文上是**可用**的
+
+同样按 §6.2，用**另一首歌（countdown_to_zero_luotianyi，中文）的 10 个行片段**，`.lab` 用项目自带的 `pypinyin` 生成音节序列，跑官方 `onnx_infer.py -l zh`（ONNX CPU，**10 段 2 秒**）：
+
+| 指标（音节级） | HubertFA（歌声训练 + 显式呼吸/静音建模） | Qwen3-ForcedAligner（同片段） |
+|---|---|---|
+| 单元数 | 81 | 81 |
+| 零长度 (<10ms) | **0（0.0%）** | 5（6.2%） |
+| 最小非零跨度 | **19.8ms** | 80.0ms |
+| 跨度中位数 | 440.8ms | 320.0ms |
+| 覆盖率 | **80.0%** | 68.9% |
+| 首单元锚定 | 0.0ms | 0.0ms |
+
+音节层之上还有音素层（161 段，中位 146.7ms），并且**显式给出 15 段呼吸音（AP）与 12 段静音（SP）**——对"分离后残留呼吸/齿音"这个实际场景是加分项。举一行实例（`风一下子停住了`）：
+
+```
+feng 0.00–0.64 | SP 0.64–0.98 | yi 0.98–1.08 | xia 1.08–1.79 | zi 1.79–2.27
+   | AP 2.27–2.60 | ting 2.60–2.90 | zhu 2.90–3.96 | …
+```
+
+时长是**有变化、像人唱**的（`zhu` 拖了 1.06 秒），不是"每单位一帧"。
+
+### 9.3 怎么读这两个结果（诚实边界）
+
+- **"是不是为歌声训练"比架构更重要。** CTC 与离散时间槽都能用，但朗读模型在歌声上会退化到不可用；这也解释了为什么现任后端（Qwen3-ForcedAligner 是多语言通用模型）在日文 VOCALOID 上零长度率能到 41.8%。
+- **HubertFA 的零长度率不能与 Qwen 直接比**：HubertFA 的输出是**对整段的连续划分**（静音/呼吸也占区间），结构上就不可能产生零长度单元。真正有信息量的是**覆盖率（80% vs 69%）**、**最小非零跨度（19.8ms vs 80ms）**与**跨度中位数**。
+- **仍未证明"更准"**：本轮没有人工标注，所以没有 BER/IOU；§6.3 的扰动测试（V4）与人工标注（V5）仍然待做。判定"HubertFA 更准"需要它们。
+- **日文路径未验证**（V2 待做）：HubertFA 的日文词典是"罗马字音节 → 音素"（`ka → k a`、`cl`＝促音、`N`＝拨音），送进去的 `.lab` 必须是空格分隔的罗马字音节，kana/汉字→罗马字（pykakasi）+ 长音/促音处理是隐藏工作量。**中文路径（pypinyin）本轮已跑通，链路最短。**
+- **工程代价**：模型 415MB（ONNX）、仓库个人项目（Apache-2.0，代码需要自己审）、官方 ONNX 推理依赖 `onnxruntime-gpu==1.19.0`（钉 CUDA 12）；本轮用**CPU 版 onnxruntime** 跑通，10 段 2 秒——按"逐行片段"的调用方式，CPU 很可能就够。
+
+### 9.4 复现方式
+
+```powershell
+# 通道：HF 直连，GitHub 走 gh-proxy.com
+curl.exe -sL -o tmp/hfa/model.zip "https://gh-proxy.com/https://github.com/wolfgitpr/HubertFA/releases/download/v0.0.7/1218_hfa_model_new_dict.zip"
+
+# 准备中文片段 + pypinyin 的 .lab（用项目自己的切段逻辑）
+uv run python tmp/hfa_prepare_zh.py
+
+# 跑 HubertFA（注意 setuptools<81：老 librosa 需要 pkg_resources）
+cd tmp/hfa/repo/HubertFA-main
+uv run --no-project --with "setuptools<81" --with click --with "librosa<0.10.0" --with textgrid `
+  --with pandas --with pyyaml --with tqdm --with onnxruntime --with soundfile --with "numpy<2" `
+  python onnx_infer.py -m <model.onnx> -wf tmp/hfa/segments -l zh -d <ds-zh-pinyin-lite.txt>
+
+# 对比（同一批片段跑 Qwen，并解析 TextGrid）
+uv run python tmp/hfa_compare.py
+```
+
+对比脚本：`tmp/hfa_prepare_zh.py`、`tmp/hfa_compare.py`；CTC 那条路的脚本：`tmp/ctc_eval_prepare.py`、`tmp/ctc_eval_qwen.py`、`tmp/ctc_eval_w2v2.py`、`tmp/ctc_eval_transcript.py`、`tmp/ctc_eval_compare.py`。
 
