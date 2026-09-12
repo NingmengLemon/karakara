@@ -67,7 +67,7 @@ uv run --script scripts/qwen3aligner_server.py --device cpu    # 强制设备
 - **改成 `language="Chinese"` 更糟**：日文假名不算 `is_cjk_char`，于是 `君が好きだから` 会被切成 `["君", "が好きだから"]`——比 nagisa 还粗。
 - 真要走「更细的单元 + 再聚合回词」这条路，得给上游 `encode_timestamp` 加一个显式的粒度开关（或在本仓库 vendor 一份 processor），属于另一件事。
 
-**结论**：在现有 API 下，零长度词只能靠"合并"或"按可用空隙细分"来处理，见下。
+**结论**：在现有 API 下，零长度词只能靠"合并"或"按可用空隙细分"来处理，见下。**要真正解决，只能换一个分辨率更细的对齐后端**——候选与验证方法见 [aligner-backends.md](aligner-backends.md)（结论：80ms 是当前模型"离散时间槽"设计的固有量化，换配置是没用的）。
 
 ## 零长度词现在是这么处理的
 

@@ -68,6 +68,7 @@ uv run --script scripts/separator_worker_audio_separator.py --list-models
 | [docs/architecture.md](docs/architecture.md) | 两个 worker 的架构、行分隔 JSON 协议、分离后端选择 |
 | [docs/environments.md](docs/environments.md) | PEP 723 内联依赖、PyTorch CUDA 索引、**uv 脚本环境缓存的坑** |
 | [docs/aligner.md](docs/aligner.md) | 对齐服务的启动/端口/响应契约、语言判定、**80ms 精度与零长度词** |
+| [docs/aligner-backends.md](docs/aligner-backends.md) | 换对齐后端的候选调研（WhisperX / HubertFA / 自建 CTC…）：分辨率、许可、Windows 可行性、验证方法 |
 | [docs/offset.md](docs/offset.md) | 全局偏移估计的设计、为什么它不可靠、两道校验 |
 | [docs/metadata-filter.md](docs/metadata-filter.md) | 元数据行滤除的开关与证据、为什么不预先 pop 掉 |
 | [docs/benchmarks.md](docs/benchmarks.md) | 人声质量 A/B 的代理指标与已测结果 |

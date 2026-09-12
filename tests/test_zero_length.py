@@ -31,7 +31,7 @@ from karakara.aligner.postprocess import (
     count_zero_length,
     refine_collapsed_words,
 )
-from karakara.core import _merge_zero_length_tokens, gen_kara
+from karakara.core import ExistingBywordPolicy, _merge_zero_length_tokens, gen_kara
 from karakara.separator.abc import AbstractStemSeparator
 from karakara.typ import NpAudioData, NpAudioSamples
 from karakara.utils.io import DEFAULT_SAMPLE_RATE
@@ -303,7 +303,13 @@ class FixedSeparator(AbstractStemSeparator):
         return {self.VOCAL_STEM_NAME: path}
 
 
-def _run(aligner: AbstractAligner, lyrics_text: str, *, refine: bool) -> str:
+def _run(
+    aligner: AbstractAligner,
+    lyrics_text: str,
+    *,
+    refine: bool,
+    existing_byword_policy: ExistingBywordPolicy = "realign",
+) -> str:
     result = gen_kara(
         Lyrics.loads(lyrics_text),
         "ignored.wav",
@@ -321,6 +327,7 @@ def _run(aligner: AbstractAligner, lyrics_text: str, *, refine: bool) -> str:
         offset_ms=0,
         min_vocal_activity=0,
         refine_collapsed_words=refine,
+        existing_byword_policy=existing_byword_policy,
     )
     return result.dumps(options=SERIALIZE)
 
@@ -332,6 +339,22 @@ def test_product_has_no_duplicate_consecutive_tags() -> None:
     assert duplicated_tags(text) == []
     # 文本完整保留（标签会把文本切开，所以按"去掉标签后的纯文本"比较）
     assert plain_text(text) == "あいうえお"
+
+
+def test_preserved_lines_are_canonicalised_too() -> None:
+    """输入自带零长度标签时，**原样保留**的行也不能把重复标签吐出去。
+
+    真实例子：`samples/ashen.lrc` 本身就是逐字文件、自带 47 处连续重复标签。
+    用 ``preserve`` 策略时这些行不走对齐，但产物仍然必须规范。
+    """
+    source = "[00:00.00]あ[00:00.00][00:01.00]い[00:01.00]\n"
+
+    text = _run(
+        ZeroLengthAligner(), source, refine=False, existing_byword_policy="preserve"
+    )
+
+    assert duplicated_tags(text) == []
+    assert plain_text(text) == "あい"
 
 
 def test_refine_also_leaves_no_duplicate_tags() -> None:

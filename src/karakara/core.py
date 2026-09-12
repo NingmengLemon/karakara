@@ -347,53 +347,98 @@ def _build_aligned_content(
                 content=tail,
             )
         )
-    tokens = _merge_zero_length_tokens(tokens)
+    tokens = _merge_zero_length_tokens(tokens, line_start=line_start)
     return BasicLyricLine(tokens) if tokens else None
 
 
-def _merge_zero_length_tokens(tokens: list[LyricToken]) -> list[LyricToken]:
-    """把 ``start == end`` 的 token 并进相邻 token，保证产物里不出现重复时间标签。
+def _canonicalise(
+    words: BasicLyricLine, *, line_start: int | None = None
+) -> BasicLyricLine:
+    """合并 ``words`` 里不贡献时长的 token，返回（必要时新的）``BasicLyricLine``。
 
-    为什么必须做：序列化器按 ``[start]文本[end]`` 写标签，并对"与前一词相接"的起点
-    做省略优化；于是一个 ``start == end`` 的 token 会写出**与前一个标签完全相同**的
-    第二个标签（实测一首歌 43 处，形如 ``[00:15.990]  [00:15.990]君``）。解析器会把
-    这种重复标签当异常丢掉（自带 ``Unordered time tag dropped`` 告警），丢掉之后该
-    token 的文本会并进前一个 token——也就是说"并进前一个"正是产物本来的语义。
-
-    这里只是把它显式化：**文本一个字符不变**（零长度 token 本来就不贡献任何时长），
-    但文件变规范、告警消失、round-trip 无损。规则：
-
-    * 零长度 token 的文本并进前一个 token（80% 的情形它本来就与前一个 token 相接，
-      两者的时间戳相同）；
-    * 它是行首 token 时并进后一个；
-    * 孤立零长度 token（与前后都不相接，约 20%）并进前一个后，会丢掉它那个**瞬时**
-      标记——它本来就没有时长，因此不损失任何区间，只损失一个时间点。
+    既用于我们生成的行，也用于**原样保留的行**：输入 LRC 本身可能就是逐字文件、
+    自己就带着重复时间标签（实测 `samples/ashen.lrc` 里有 47 处），原样吐出去只会把
+    同一份毛病传下去。
     """
-    if not any(
-        token.start is not None and token.end is not None and token.start == token.end
-        for token in tokens
-    ):
+    tokens = _merge_zero_length_tokens(list(words), line_start=line_start)
+    return words if len(tokens) == len(words) else BasicLyricLine(tokens)
+
+
+def _preserved_line(line: LyricLine) -> LyricLine:
+    """原样保留一行——但仍然把不贡献时长的 token 合并掉，保证产物规范。"""
+    copied = line.copy()
+    copied.content = _canonicalise(copied.content, line_start=copied.start)
+    copied.reference_lines = [
+        _canonicalise(reference, line_start=copied.start)
+        for reference in copied.reference_lines
+    ]
+    return copied
+
+
+def _merge_zero_length_tokens(
+    tokens: list[LyricToken], *, line_start: int | None = None
+) -> list[LyricToken]:
+    """把「不贡献任何时长」的 token 并进相邻 token，保证产物里不出现重复时间标签。
+
+    为什么必须做：序列化器按 ``[start]文本[end]`` 写标签，并对"与前一词相接的起点"
+    做省略优化；于是任何"写出来与前一个标签相同"的时间戳都会变成**重复时间标签**
+    （实测某首歌 67 处，形如 ``[00:15.990]  [00:15.990]君``）。解析器会把这种重复
+    标签当异常丢掉（自带 ``Unordered time tag dropped`` 告警），丢掉之后该 token 的
+    文本会并进前一个 token——也就是说"并进前一个"正是产物本来的语义。
+
+    这里只是把它显式化：**文本一个字符不变**（这些 token 本来就不贡献时长），
+    但文件变规范、告警消失、round-trip 无损。
+
+    两类 token 会写出重复标签，都要合并：
+
+    1. ``start == end``——时长不足一帧的单元（本模块存在的主因）；
+    2. ``start is None`` 且 ``end <= 上一个时间戳``——解析器对「已有逐字标签的行」
+       会产出这种 token（例如 ``(None, 0)``），它的 ``end`` 标签同样会与行首/前一个
+       标签重复。
+
+    合并规则：并进前一个 token；它是行首 token 时并进后一个。孤立零长度 token
+    （与前后都不相接，约 20%）并进前一个后会丢掉它那个**瞬时**标记——它本来就没有
+    时长，因此不损失任何区间，只损失一个时间点。
+    """
+
+    def collapsible(index: int) -> bool:
+        token = tokens[index]
+        if token.start is not None and token.end is not None:
+            return token.start == token.end
+        if token.start is None and token.end is not None:
+            reference = tokens[index - 1].end if index > 0 else line_start
+            return reference is not None and token.end <= reference
+        return False
+
+    if not any(collapsible(index) for index in range(len(tokens))):
         return tokens
 
     merged: list[LyricToken] = []
-    prefix: list[LyricToken] = []
-    for token in tokens:
-        if (
-            token.start is not None
-            and token.end is not None
-            and token.start == token.end
-        ):
+    prefix_text: list[str] = []
+    for index, token in enumerate(tokens):
+        if collapsible(index):
             if merged:
                 merged[-1].content += token.content
             else:
-                prefix.append(token)
+                # 行首就是这类 token：先攒着，等第一个正常 token 到来时并进去
+                prefix_text.append(token.content)
             continue
-        if prefix:
-            token.content = "".join(item.content for item in prefix) + token.content
-            prefix = []
+        if prefix_text:
+            token.content = "".join(prefix_text) + token.content
+            prefix_text = []
         merged.append(token)
-    # 整行只有零长度 token：原样保留（_align_line 会清掉末词的 end，不会写出重复标签）
-    merged.extend(prefix)
+
+    if prefix_text:
+        # 整行全是这类 token（实测：某行两个词都塌成 0 长度，且对齐器还多吐了几个
+        # 文本里根本没有的词）。合成**一个** token：时间取行首与最后一个已知终点，
+        # 行首标签与行末标签会分别兜住它们，因此不会产生重复标签。
+        last_end = next(
+            (item.end for item in reversed(tokens) if item.end is not None), None
+        )
+        start = line_start if line_start is not None else tokens[0].start
+        merged.append(
+            LyricToken(content="".join(prefix_text), start=start, end=last_end)
+        )
     return merged
 
 
@@ -452,7 +497,10 @@ def _align_line(
             start=line.start,
             end=end,
             content=content,
-            reference_lines=[reference.copy() for reference in line.reference_lines],
+            reference_lines=[
+                _canonicalise(reference.copy(), line_start=line.start)
+                for reference in line.reference_lines
+            ],
         ),
         stats,
     )
@@ -547,7 +595,7 @@ def gen_kara(
             metadata_filter=metadata_filter,
             existing_byword_policy=existing_byword_policy,
         ):
-            result.append(line.copy())
+            result.append(_preserved_line(line))
             continue
 
         start, end = _line_sample_range(working_lyrics, index, sample_rate)
@@ -556,14 +604,14 @@ def gen_kara(
             logger.warning(
                 f"Line {index}: invalid audio segment: [{start}, {end}], preserving original"
             )
-            result.append(line.copy())
+            result.append(_preserved_line(line))
             continue
         if (end is not None and end >= total_samples) or start >= total_samples:
             logger.warning(
                 f"Line {index}: audio segment out of bounds: [{start}, {end}] "
                 f"(total samples: {total_samples}), preserving original"
             )
-            result.append(line.copy())
+            result.append(_preserved_line(line))
             continue
 
         segment_end = end if end is not None else total_samples
@@ -577,7 +625,7 @@ def gen_kara(
                 f"skip low vocal activity line {index}: activity={activity:.3f} "
                 f"< threshold={min_vocal_activity:.3f}: {text!r}"
             )
-            result.append(line.copy())
+            result.append(_preserved_line(line))
             continue
 
         audio_piece = vocal_np[:, start:end] if end is not None else vocal_np[:, start:]
@@ -596,7 +644,9 @@ def gen_kara(
         attempted += 1
         if aligned_line is None:
             failed += 1
-        result.append(aligned_line if aligned_line is not None else line.copy())
+        result.append(
+            aligned_line if aligned_line is not None else _preserved_line(line)
+        )
 
     _check_alignment_health(attempted=attempted, failed=failed)
     _report_zero_length(stats)
