@@ -422,24 +422,38 @@ SP 300-896 | so 896-1320 | ra 1320-1767 | no 1767-1859 | o 1859-3470
 
 ### 9.4 复现方式
 
+模型与上游代码现在放在 **`models/aligner/HubertFA/`**（`models/` 在 .gitignore 内；来源与坑见该目录的 `SOURCE.md`），中间产物由脚本重新生成到 `tmp/`。
+
 ```powershell
 # 通道：HF 直连，GitHub 走 gh-proxy.com
-curl.exe -sL -o tmp/hfa/model.zip "https://gh-proxy.com/https://github.com/wolfgitpr/HubertFA/releases/download/v0.0.7/1218_hfa_model_new_dict.zip"
+curl.exe -sL -o hfa.zip "https://gh-proxy.com/https://github.com/wolfgitpr/HubertFA/releases/download/v0.0.7/1218_hfa_model_new_dict.zip"
 
-# 准备中文片段 + pypinyin 的 .lab（用项目自己的切段逻辑）
-uv run python tmp/hfa_prepare_zh.py
+# 准备片段 + .lab（用项目自己的切段逻辑；中文走 pypinyin，日文走 pykakasi）
+uv run --with pykakasi python tmp/hfa_prepare_ja.py     # 生成 tmp/hfa/segments_ja/
+uv run python tmp/hfa_prepare_zh.py                     # 生成 tmp/hfa/segments/
 
 # 跑 HubertFA（注意 setuptools<81：老 librosa 需要 pkg_resources）
-cd tmp/hfa/repo/HubertFA-main
+cd models/aligner/HubertFA/upstream
 uv run --no-project --with "setuptools<81" --with click --with "librosa<0.10.0" --with textgrid `
   --with pandas --with pyyaml --with tqdm --with onnxruntime --with soundfile --with "numpy<2" `
-  python onnx_infer.py -m <model.onnx> -wf tmp/hfa/segments -l zh -d <ds-zh-pinyin-lite.txt>
+  python onnx_infer.py -m ../model.onnx -wf <wav 目录> -l ja -d ../japanese_dict_full.txt
 
 # 对比（同一批片段跑 Qwen，并解析 TextGrid）
-uv run python tmp/hfa_compare.py
+uv run python tmp/hfa_compare_ja.py
 ```
 
-对比脚本：`tmp/hfa_prepare_zh.py`、`tmp/hfa_compare.py`；CTC 那条路的脚本：`tmp/ctc_eval_prepare.py`、`tmp/ctc_eval_qwen.py`、`tmp/ctc_eval_w2v2.py`、`tmp/ctc_eval_transcript.py`、`tmp/ctc_eval_compare.py`；日文路径：`tmp/hfa_prepare_ja.py`、`tmp/hfa_compare_ja.py`。
+对比脚本：`tmp/hfa_prepare_zh.py`、`tmp/hfa_compare.py`、`tmp/hfa_prepare_ja.py`、`tmp/hfa_compare_ja.py`；CTC 那条路的脚本：`tmp/ctc_eval_prepare.py`、`tmp/ctc_eval_qwen.py`、`tmp/ctc_eval_w2v2.py`、`tmp/ctc_eval_transcript.py`、`tmp/ctc_eval_compare.py`；V5 听力材料：`tmp/v5_make_listening.py`、`tmp/v5_verify_material.py`。
+
+### 9.6 V5 的准备：听力材料（等人耳裁决）
+
+`tmp/v5_listen/`：4 行（line 0 / 4 / 7 / 8，取自 Qwen 覆盖率最低的几行）的
+**立体声 A/B**——**左耳 = HubertFA 的边界咔哒，右耳 = Qwen 的边界咔哒**，两声道都有人声；
+配套 PNG（波形 + 两套边界）与 `README.md`（逐单元时间表）。咔哒位置已自检：100% 落在预期边界上（±2ms）。
+
+**line 7 是两套结果结构性冲突的典型**：Qwen 把全部 8 个词挤在片段前 2 秒内，
+HubertFA 把 16 个モーラ铺满整段 13 秒。听的时候最该确认的就是：**这一行的演唱到底到什么时候结束**——
+如果人声只在前 2 秒，那 Qwen 是对的、而 HuberFA 的 88.8% 覆盖率是"连续划分"这一输出形态的副产品；
+如果整段都在唱，则相反。这个判断决定了默认后端该给谁。
 
 ### 9.5 怎么接进来：**多后端，而不是替换**（设计提案，尚未实现）
 
