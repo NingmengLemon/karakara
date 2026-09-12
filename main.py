@@ -186,6 +186,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="低于该归一化人声活动度的行不对齐（默认: 0.01；0=关闭）",
     )
     parser.add_argument(
+        "--refine-collapsed-words",
+        action="store_true",
+        help=(
+            "把对齐器返回的零长度词摊进其后的空隙（默认关闭）。对齐器的边界量化到 "
+            "80ms，时长不足一帧的词会拿到 start==end、在播放器里无法单独高亮（实测占 "
+            "22.5%%）；打开后按文本长度加权把它摊进后面的空隙，且不改动任何被模型报告"
+            "过的边界。这是**推断值**，所以默认关闭"
+        ),
+    )
+    parser.add_argument(
         "--existing-byword-policy",
         choices=("realign", "preserve"),
         default="realign",
@@ -379,6 +389,7 @@ def process_job(
     existing_byword_policy: ExistingBywordPolicy,
     aligner_language: str = "auto",
     target_lang: str | None = None,
+    refine_collapsed_words: bool = False,
 ) -> None:
     """处理一组输入，并在函数返回时释放该任务的大型音频对象。"""
     lyrics = Lyrics.loads(job.lyrics_path.read_text(encoding="utf-8"))
@@ -396,6 +407,7 @@ def process_job(
         existing_byword_policy=existing_byword_policy,
         aligner_language=aligner_language,
         target_lang=target_lang,
+        refine_collapsed_words=refine_collapsed_words,
     )
     save_lyrics(aligned, job.output_path)
 
@@ -477,6 +489,7 @@ def run_batch(args: argparse.Namespace) -> int:
                     existing_byword_policy=args.existing_byword_policy,
                     aligner_language=args.aligner_language,
                     target_lang=args.target_lang,
+                    refine_collapsed_words=args.refine_collapsed_words,
                 )
             except Exception as exc:
                 failures += 1
@@ -534,6 +547,7 @@ def run_single(args: argparse.Namespace) -> int:
             existing_byword_policy=args.existing_byword_policy,
             aligner_language=args.aligner_language,
             target_lang=args.target_lang,
+            refine_collapsed_words=args.refine_collapsed_words,
         )
     finally:
         aligner.close()

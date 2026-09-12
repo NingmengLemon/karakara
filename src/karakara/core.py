@@ -10,6 +10,12 @@ from lemony_lrc_parser.offset import apply_delta
 from numpy.typing import NDArray
 
 from karakara.aligner.abc import AbstractAligner, AlignedWord, LangCode
+from karakara.aligner.postprocess import (
+    DEGENERATE_RATIO_WARN,
+    ZeroLengthStats,
+    count_zero_length,
+    refine_collapsed_words,
+)
 from karakara.debug import AudioDumper
 from karakara.offset import (
     DEFAULT_ANCHOR_TOLERANCE_MS,
@@ -341,7 +347,54 @@ def _build_aligned_content(
                 content=tail,
             )
         )
+    tokens = _merge_zero_length_tokens(tokens)
     return BasicLyricLine(tokens) if tokens else None
+
+
+def _merge_zero_length_tokens(tokens: list[LyricToken]) -> list[LyricToken]:
+    """把 ``start == end`` 的 token 并进相邻 token，保证产物里不出现重复时间标签。
+
+    为什么必须做：序列化器按 ``[start]文本[end]`` 写标签，并对"与前一词相接"的起点
+    做省略优化；于是一个 ``start == end`` 的 token 会写出**与前一个标签完全相同**的
+    第二个标签（实测一首歌 43 处，形如 ``[00:15.990]  [00:15.990]君``）。解析器会把
+    这种重复标签当异常丢掉（自带 ``Unordered time tag dropped`` 告警），丢掉之后该
+    token 的文本会并进前一个 token——也就是说"并进前一个"正是产物本来的语义。
+
+    这里只是把它显式化：**文本一个字符不变**（零长度 token 本来就不贡献任何时长），
+    但文件变规范、告警消失、round-trip 无损。规则：
+
+    * 零长度 token 的文本并进前一个 token（80% 的情形它本来就与前一个 token 相接，
+      两者的时间戳相同）；
+    * 它是行首 token 时并进后一个；
+    * 孤立零长度 token（与前后都不相接，约 20%）并进前一个后，会丢掉它那个**瞬时**
+      标记——它本来就没有时长，因此不损失任何区间，只损失一个时间点。
+    """
+    if not any(
+        token.start is not None and token.end is not None and token.start == token.end
+        for token in tokens
+    ):
+        return tokens
+
+    merged: list[LyricToken] = []
+    prefix: list[LyricToken] = []
+    for token in tokens:
+        if (
+            token.start is not None
+            and token.end is not None
+            and token.start == token.end
+        ):
+            if merged:
+                merged[-1].content += token.content
+            else:
+                prefix.append(token)
+            continue
+        if prefix:
+            token.content = "".join(item.content for item in prefix) + token.content
+            prefix = []
+        merged.append(token)
+    # 整行只有零长度 token：原样保留（_align_line 会清掉末词的 end，不会写出重复标签）
+    merged.extend(prefix)
+    return merged
 
 
 def _align_line(
@@ -354,11 +407,16 @@ def _align_line(
     aligner: AbstractAligner,
     dumper: AudioDumper,
     language: LangCode | None,
-) -> LyricLine | None:
-    """对单行执行对齐，不能可靠映射时返回 ``None``。
+    refine_collapsed: bool = False,
+) -> tuple[LyricLine | None, ZeroLengthStats]:
+    """对单行执行对齐，不能可靠映射时返回 ``(None, stats)``。
 
     这里刻意捕获所有异常：单行失败只应降级为该行保留原样，不该中断整首歌。
     "整首歌都失败" 由 :func:`_check_alignment_health` 兜住并升级为硬错误。
+
+    ``refine_collapsed`` 打开时，对齐器返回的零长度单元会被摊进其后的空隙
+    （见 :func:`karakara.aligner.postprocess.refine_collapsed_words`）；无论开关与否，
+    零长度单元的文本都会在 ``_build_aligned_content`` 里被并进相邻 token。
     """
     audio_piece = audio
     dumper.dump(f"05_line_{index}", audio_piece, sample_rate)
@@ -366,22 +424,37 @@ def _align_line(
         words = aligner.align(audio_piece, text, sample_rate, language=language)
     except Exception as exc:  # noqa: BLE001 - 见 docstring：逐行降级是设计行为
         logger.error(f"Error occurred while aligning line {index}: {exc}")
-        return None
+        return None, ZeroLengthStats()
+
+    stats = count_zero_length(words)
+    if refine_collapsed and stats.zero_length:
+        segment_ms = audio_piece.shape[-1] / sample_rate * 1000
+        words, refined = refine_collapsed_words(words, total_ms=segment_ms)
+        stats = ZeroLengthStats(
+            units=stats.units, zero_length=stats.zero_length, refined=refined
+        )
+        if refined:
+            logger.debug(
+                f"line {index}: refined {refined}/{stats.zero_length} zero-length unit(s)"
+            )
 
     content = _build_aligned_content(
         text, words, line_start=line.start, line_index=index
     )
     if content is None:
         logger.warning(f"Line {index}: no usable alignment result, preserving original")
-        return None
+        return None, stats
     end = content[-1].end if content and content[-1].end is not None else line.end
     if content and content[-1].end is not None:
         content[-1].end = None
-    return LyricLine(
-        start=line.start,
-        end=end,
-        content=content,
-        reference_lines=[reference.copy() for reference in line.reference_lines],
+    return (
+        LyricLine(
+            start=line.start,
+            end=end,
+            content=content,
+            reference_lines=[reference.copy() for reference in line.reference_lines],
+        ),
+        stats,
     )
 
 
@@ -400,6 +473,7 @@ def gen_kara(
     offset_ms: float | None = None,
     min_vocal_activity: float = 0.01,
     existing_byword_policy: ExistingBywordPolicy = "realign",
+    refine_collapsed_words: bool = False,
 ) -> Lyrics:
     """根据音频和行级歌词生成词级逐字歌词。
 
@@ -411,6 +485,11 @@ def gen_kara(
     行级多数票判定。
 
     ``separate_work_dir`` 是分离中间产物的落盘位置；``None`` 用系统临时目录。
+
+    ``refine_collapsed_words`` 对应 ``--refine-collapsed-words``：把对齐器返回的
+    零长度单元摊进其后的空隙（详见 :mod:`karakara.aligner.postprocess`）。默认关闭是
+    因为那是**推断值**——模型只说了"这两个边界落在同一个 80ms 帧里"。无论开关与否，
+    零长度单元的**文本**都不会丢，只会并进相邻 token。
     """
     if min_vocal_activity < 0:
         raise ValueError("min_vocal_activity must be non-negative")
@@ -457,6 +536,7 @@ def gen_kara(
     result = Lyrics(metadata=working_lyrics.metadata)
     attempted = 0
     failed = 0
+    stats = ZeroLengthStats()
     for index, line in enumerate(working_lyrics):
         text = line.text
         if _should_preserve_line(
@@ -501,7 +581,7 @@ def gen_kara(
             continue
 
         audio_piece = vocal_np[:, start:end] if end is not None else vocal_np[:, start:]
-        aligned_line = _align_line(
+        aligned_line, line_stats = _align_line(
             line,
             text,
             index=index,
@@ -510,14 +590,43 @@ def gen_kara(
             aligner=aligner,
             dumper=dumper,
             language=language,
+            refine_collapsed=refine_collapsed_words,
         )
+        stats = stats.merged_with(line_stats)
         attempted += 1
         if aligned_line is None:
             failed += 1
         result.append(aligned_line if aligned_line is not None else line.copy())
 
     _check_alignment_health(attempted=attempted, failed=failed)
+    _report_zero_length(stats)
     return result
+
+
+def _report_zero_length(stats: ZeroLengthStats) -> None:
+    """把零长度词占比当质量信号报出来。
+
+    它是"这首歌是否已经顶到本工具的能力边界"的直接信号：对齐器的边界量化到 80ms
+    （见 :mod:`karakara.aligner.postprocess`），单元时长不足一帧就会变成零长度，
+    在播放器里无法单独高亮。实测逐首 10.7% / 15.3% / 24.6% 属正常范围，
+    41.8% 那首则明显是模型吃力。
+    """
+    if not stats.units:
+        return
+    message = (
+        f"aligner returned {stats.units} unit(s), {stats.zero_length} zero-length "
+        f"({stats.ratio:.1%})"
+    )
+    if stats.refined:
+        message += f", refined {stats.refined} into the following gap"
+    if stats.ratio >= DEGENERATE_RATIO_WARN:
+        logger.warning(
+            f"{message} — above the {DEGENERATE_RATIO_WARN:.0%} warn threshold; "
+            f"those units cannot be highlighted individually (try "
+            f"--refine-collapsed-words, or a different aligner)"
+        )
+    else:
+        logger.info(message)
 
 
 def _check_alignment_health(*, attempted: int, failed: int) -> None:

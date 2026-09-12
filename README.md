@@ -53,6 +53,7 @@ uv run --script scripts/separator_worker_audio_separator.py --list-models
 | `--aligner-language {auto,zh,ja,en,...}` / `--target-lang` | 送给对齐器的语言 / 只对齐该语言的行 |
 | `--offset` / `--no-offset-estimate` | 手动全局偏移（ms）/ 完全不偏移 |
 | `--min-vocal-activity` | 低于该归一化人声活动度的行不对齐（默认 0.01） |
+| `--refine-collapsed-words` | 把对齐器的零长度词摊进其后的空隙（**推断值**，默认关闭；见 [docs/aligner.md](docs/aligner.md)） |
 | `--metadata-filter` / `--strict-pairs` | 元数据行配置 / 要求所有 LRC 都有配对音频 |
 | `--dump-dir` / `--sep-work-dir` | 调试音频导出 / 分离中间产物目录 |
 | `--existing-byword-policy {realign,preserve}` | 已有逐字标签的行：重新对齐 / 原样保留 |
