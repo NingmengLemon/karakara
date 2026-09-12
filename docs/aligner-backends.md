@@ -382,9 +382,43 @@ feng 0.00–0.64 | SP 0.64–0.98 | yi 0.98–1.08 | xia 1.08–1.79 | zi 1.79�
 
 - **"是不是为歌声训练"比架构更重要。** CTC 与离散时间槽都能用，但朗读模型在歌声上会退化到不可用；这也解释了为什么现任后端（Qwen3-ForcedAligner 是多语言通用模型）在日文 VOCALOID 上零长度率能到 41.8%。
 - **HubertFA 的零长度率不能与 Qwen 直接比**：HubertFA 的输出是**对整段的连续划分**（静音/呼吸也占区间），结构上就不可能产生零长度单元。真正有信息量的是**覆盖率（80% vs 69%）**、**最小非零跨度（19.8ms vs 80ms）**与**跨度中位数**。
-- **仍未证明"更准"**：本轮没有人工标注，所以没有 BER/IOU；§6.3 的扰动测试（V4）与人工标注（V5）仍然待做。判定"HubertFA 更准"需要它们。
-- **日文路径未验证**（V2 待做）：HubertFA 的日文词典是"罗马字音节 → 音素"（`ka → k a`、`cl`＝促音、`N`＝拨音），送进去的 `.lab` 必须是空格分隔的罗马字音节，kana/汉字→罗马字（pykakasi）+ 长音/促音处理是隐藏工作量。**中文路径（pypinyin）本轮已跑通，链路最短。**
+- **仍未证明"更准"**：本轮没有人工标注，所以没有 BER/IOU；§6.3 的扰动测试（V4）与人工标注（V5）仍然待做。判定"HubertFA 更准"需要它们。**因此现在不适合直接替换默认后端**——更适合先做成"多后端之一"，等 V4/V5 有结论再决定默认值（见 §9.5）。
+- **日文路径已验证**（V2 完成，见 §9.2b）：罗马字预处理可用、词典 0 遗漏；代价是促音被丢（上游 `ja/cl` 的 bug）与汉字读音靠猜（假名歌词可绕开）。
 - **工程代价**：模型 415MB（ONNX）、仓库个人项目（Apache-2.0，代码需要自己审）、官方 ONNX 推理依赖 `onnxruntime-gpu==1.19.0`（钉 CUDA 12）；本轮用**CPU 版 onnxruntime** 跑通，10 段 2 秒——按"逐行片段"的调用方式，CPU 很可能就够。
+
+### 9.2b V2：日文（罗马字）路径**也跑通了**
+
+日文要先把行文本转成**罗马字音节 `.lab`**（词典 179 个键：CV/CyV 音节 + `cl` 促音 + `n` 撥音 + 单元音）。转换链：文本 --`pykakasi`--> 平假名读音 --自写规则--> 音节键（拗音合并、`っ→cl`、`ん→n`、长音 `ー` 重复前元音、助词 `は/へ/を → wa/e/o`）。
+
+对**蒲公英的同一批 17 个片段**（与 9.1 完全相同的输入，Qwen 数字已在上表）跑 `-l ja`：
+
+| 指标 | HubertFA ja（モーラ级，10ms 帧） | Qwen3-ForcedAligner（词级，同片段） |
+|---|---|---|
+| 单元数 | 260 | 141 |
+| 零长度 (<10ms) | 5（1.9%） | **59（41.8%）** |
+| 最小非零跨度 | **6.8ms** | 80ms |
+| 跨度中位数 | 440.1ms | 160ms |
+| **覆盖率** | **88.8%** | **46.1%** |
+
+逐行覆盖率对照（HFA vs Qwen）：`91.1% vs 38.8%`、`84.8% vs 64.6%`、`94.1% vs 59.3%`、`85.9% vs 78.2%`、`84.0% vs 14.2%`、`94.0% vs 43.3%`、`88.8% vs 6.7%`、`89.5% vs 93.3%` —— **HFA 稳定在 84–94%，Qwen 则在 6.7%–93.3% 之间剧烈波动**（后者正是零长度词密集出现的行）。
+
+mora 级输出实例（`空の音　風が伝えた`，预期 12 音节）：
+
+```
+SP 300-896 | so 896-1320 | ra 1320-1767 | no 1767-1859 | o 1859-3470
+   | to 3700-4127 | AP 4127-4547 | ka 4547-4909 | ze 4909-5149 | ga 5149-5920
+```
+
+**日文路径的实际代价与坑**：
+
+1. **促音（っ）会被丢掉**：上游 `tools/g2p.py` 的 `BaseG2P.__call__` 把除 `SP` 外的音素一律加 `{language}/` 前缀，而 `cl` 在 `vocab.json` 里属于**无前缀的静音组**（`silent_phonemes` / `merged_phoneme_groups`）→ 会拼出不存在的 `ja/cl` 并 KeyError。**这是上游的 bug，本仓库没有改它**；绕法是送 `.lab` 前去掉促音（代价：促音/长音的边界会糊一点）。若将来正式集成，更干净的做法是在自己的 worker 里修掉前缀逻辑（对 `silent_phonemes` 不加前缀）。
+2. **汉字读音靠猜**：`pykakasi` 给的是猜测读音，实测 `放つ` 被读成 `ho u tsu`（正确 `ha na tsu`）——"唱的字"与"送进去的音素"不一致会直接拉低对齐质量。**用假名歌词可以完全绕开这一步**（本库里就有 `samples/tsurupettan_sun3_kana.lrc` 这类）。
+3. 词典覆盖：本轮 260 个音节**全部命中词典键**（0 遗漏），无法转成假名的字符只有 `「」`。
+4. 老 `librosa`（`<0.10`）需要 `setuptools<81`（`pkg_resources` 在 setuptools 81 之后被移除）。
+
+### 9.2c 模型已迁到 `models/`
+
+`models/aligner/HubertFA/`（`models/` 在 .gitignore 内，不进仓库）：`model.onnx` + `vocab.json` + `config.json` + 三个词典 + 上游代码快照 `upstream/`，共 416MB；来源、版本、下载通道与全部实测结论记录在同目录的 `SOURCE.md`。
 
 ### 9.4 复现方式
 
@@ -405,5 +439,27 @@ uv run --no-project --with "setuptools<81" --with click --with "librosa<0.10.0" 
 uv run python tmp/hfa_compare.py
 ```
 
-对比脚本：`tmp/hfa_prepare_zh.py`、`tmp/hfa_compare.py`；CTC 那条路的脚本：`tmp/ctc_eval_prepare.py`、`tmp/ctc_eval_qwen.py`、`tmp/ctc_eval_w2v2.py`、`tmp/ctc_eval_transcript.py`、`tmp/ctc_eval_compare.py`。
+对比脚本：`tmp/hfa_prepare_zh.py`、`tmp/hfa_compare.py`；CTC 那条路的脚本：`tmp/ctc_eval_prepare.py`、`tmp/ctc_eval_qwen.py`、`tmp/ctc_eval_w2v2.py`、`tmp/ctc_eval_transcript.py`、`tmp/ctc_eval_compare.py`；日文路径：`tmp/hfa_prepare_ja.py`、`tmp/hfa_compare_ja.py`。
+
+### 9.5 怎么接进来：**多后端，而不是替换**（设计提案，尚未实现）
+
+项目在分离侧已经有完全同构的先例：`--separator-backend {demucs,audio-separator}` + `AbstractStemSeparator` + 每后端一个 worker 脚本。对齐侧照搬即可：
+
+```
+--aligner-backend {qwen3,hfa}             # 默认仍是 qwen3（理由见下）
+--aligner-url <http://host:port>          # 两个后端都是 HTTP，契约不变
+```
+
+**关键设计：保持 `/align` 契约不变**（请求 = 音频 + 文本 + 语言；响应 = `{"words": [{"text","start_time","end_time"}]}`），把差异全部关在新的服务端里：
+
+| 关注点 | 谁负责 | 说明 |
+|---|---|---|
+| 音频切段、偏移、元数据过滤、产物序列化 | **主程序（不动）** | 现有流水线一行都不用改 |
+| 文本 → `.lab`（G2P） | HFA 服务端 | zh 用 `pypinyin`、ja 用 `pykakasi`+音节规则、en 用 `ds_cmudict` |
+| 音素/モーラ → **行文本的单元** | HFA 服务端 | **这是唯一的实质工作量**：`_build_aligned_content` 用 `text.find(word, …)` 把单元映射回原文，所以返回的 `text` 必须是原行文本的**子串序列**。做法是 G2P 时记录**每个音节来自第几个字符**，再把 モーラ/音素按字符聚合（`空` = `so`+`ra` → 一个字符单元 896–1767ms），返回**逐字符**单元 |
+| 后端特有的坑 | HFA 服务端 | 促音 `ja/cl` 的前缀 bug（对 `silent_phonemes` 不加前缀）、`setuptools<81`、模型/词典路径按项目根定位 |
+
+**默认后端怎么定**：我建议**先不换**，把 HFA 做成可选后端，然后用 §8 的 V4（扰动稳定性）与 V5（手工标一行算 BER/IOU）来定。理由是本轮证据只证明了 **HFA 更密、更细、覆盖率更高**（日文覆盖率 88.8% vs 46.1%，零长度 1.9% vs 41.8%），**没有**证明它**更准**——覆盖率低也可能是"末段静音被正确判成没有歌词"，而 CTC/帧级模型在长音拖腔上"摊派误差"的风险恰恰是它覆盖率高的一种可能解释。默认值这种决定值得用 V5 那一行人工标注来兜底。
+
+**顺带**：HFA 的输出里天然带**呼吸音（AP）/静音（SP）**分段，接入后可以在产物里利用（例如把 `AP` 段落当作换气提示，或用于 `min_vocal_activity` 的更准判据）——这是 Qwen 后端给不了的额外信息。
 
