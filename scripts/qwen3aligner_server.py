@@ -51,6 +51,7 @@ import argparse
 import logging
 import shutil
 import tempfile
+import threading
 from pathlib import Path
 
 import torch
@@ -88,6 +89,9 @@ class AlignResponse(BaseModel):
 #: 由 ``main()`` 填充；模块级持有以便整个进程复用同一个模型实例。
 _aligner: Qwen3ForcedAligner | None = None
 
+#: 推理锁。见 ``align()`` 的 docstring：端点跑在线程池里，但推理本身要串行。
+_INFERENCE_LOCK = threading.Lock()
+
 
 def current_aligner() -> Qwen3ForcedAligner:
     """取出已加载的模型；尚未就绪时返回 503 而不是 AttributeError。"""
@@ -114,7 +118,7 @@ def _normalise_list(value: list[str] | str, count: int, field: str) -> list[str]
 
 
 @app.post("/align", response_model=list[AlignResponse] | AlignResponse)
-async def align(
+def align(
     audio: list[UploadFile] | UploadFile = File(
         ..., description="音频文件 (wav/mp3/flac/m4a)"
     ),
@@ -123,7 +127,13 @@ async def align(
         "Chinese", description="语言 (Chinese/English/French/German/...)"
     ),
 ) -> list[AlignResponse] | AlignResponse:
-    """对音频和文本进行强制对齐，返回逐词时间戳。支持单样本和批量对齐。"""
+    """对音频和文本进行强制对齐，返回逐词时间戳。支持单样本和批量对齐。
+
+    刻意写成**同步** ``def``：推理是阻塞的，写成 ``async def`` 会在事件循环里直接
+    跑完整个生成过程，于是（实测）一个卡住或异常耗时的请求会把 ``/health`` 和所有
+    后续请求一起堵死，客户端超时断开后服务端还在算，最后连监听套接字都一起废掉。
+    同步端点由 FastAPI 丢进线程池执行，事件循环保持可用。
+    """
     audios = audio if isinstance(audio, list) else [audio]
     # 契约：只有真的收到多个文件才算批量（详见模块 docstring）。
     is_batch = len(audios) > 1
@@ -139,11 +149,14 @@ async def align(
                 tmp_paths.append(tmp.name)
 
         try:
-            results = current_aligner().align(
-                audio=tmp_paths,
-                text=texts,
-                language=languages,
-            )
+            # 模型推理串行化：GPU 上并发推理只会互相抢显存，而主程序本来就是
+            # 逐行调用。锁住它，同时保留事件循环/线程池对其他请求（如 /health）的响应。
+            with _INFERENCE_LOCK:
+                results = current_aligner().align(
+                    audio=tmp_paths,
+                    text=texts,
+                    language=languages,
+                )
         except HTTPException:
             raise
         except Exception as exc:

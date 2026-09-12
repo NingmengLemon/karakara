@@ -229,7 +229,7 @@ async def test_server_returns_object_for_a_single_file(
     """单个文件 → 对象。这正是客户端 ``response["words"]`` 依赖的形状。"""
     server = _load_server(monkeypatch)
 
-    result = await server.align(audio=_FakeUpload("a.wav"), text="hello")
+    result = server.align(audio=_FakeUpload("a.wav"), text="hello")
 
     # FastAPI 会把它序列化成 {"words": [...]}，即客户端 response["words"] 需要的形状。
     assert not isinstance(result, list), (
@@ -245,7 +245,7 @@ async def test_server_returns_array_for_multiple_files(
 ) -> None:
     server = _load_server(monkeypatch)
 
-    result = await server.align(
+    result = server.align(
         audio=[_FakeUpload("a.wav"), _FakeUpload("b.wav")],
         text=["one", "two"],
         language="Chinese",
@@ -262,7 +262,7 @@ async def test_server_broadcasts_single_language_and_text(
     """单个 language 应被广播到每个音频，而不是只作用于第一个。"""
     server = _load_server(monkeypatch)
 
-    result = await server.align(
+    result = server.align(
         audio=[_FakeUpload("a.wav"), _FakeUpload("b.wav")],
         text="same text",
         language="Japanese",
@@ -278,7 +278,27 @@ async def test_server_rejects_mismatched_text_count(
     server = _load_server(monkeypatch)
 
     with pytest.raises(Exception, match="不匹配"):
-        await server.align(
+        server.align(
             audio=[_FakeUpload("a.wav"), _FakeUpload("b.wav")],
             text=["one", "two", "three"],
         )
+
+
+def test_align_endpoint_is_sync_so_inference_cannot_wedge_the_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """端点必须是同步 `def`。
+
+    推理是阻塞的：写成 ``async def`` 就会在事件循环里跑完整个生成过程，于是实测
+    一个异常耗时的请求把 ``/health`` 和所有后续请求一起堵死，客户端超时断开后服务端
+    还在算，最后连监听套接字都废掉（WinError 64）。同步端点由 FastAPI 丢进线程池。
+    """
+    import inspect
+
+    server = _load_server(monkeypatch)
+
+    assert not inspect.iscoroutinefunction(server.align), (
+        "align 端点退化回 async def 会让一个慢请求堵死整个服务"
+    )
+    # 推理本身要串行（GPU 并发只会互相抢显存），但锁不能放在事件循环里。
+    assert hasattr(server, "_INFERENCE_LOCK")
