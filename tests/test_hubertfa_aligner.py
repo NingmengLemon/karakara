@@ -368,3 +368,42 @@ def test_endpoint_is_sync(server: Any) -> None:
     import inspect
 
     assert not inspect.iscoroutinefunction(server.align)
+
+
+# --------------------------------------------------------------------------
+# 5. 缺失依赖时的报错必须**可执行**
+# --------------------------------------------------------------------------
+
+
+def test_supported_languages_matches_the_alias_values(server: Any) -> None:
+    """与 qwen 服务同名端点；主程序侧的语言登记表靠它做防漂移检查。"""
+    assert server.supported_languages() == sorted(
+        set(server._LANGUAGE_ALIASES.values())
+    )
+
+
+def test_missing_model_reports_where_to_download(
+    server: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(server, "HUBERTFA_ROOT", tmp_path)
+    monkeypatch.setattr(server, "_inference", None)
+
+    with pytest.raises(Exception, match=r"SOURCE\.md"):
+        server._load_inference()
+
+
+def test_missing_upstream_code_reports_the_submodule_command(
+    server: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """上游代码是 git submodule，没初始化时必须直接给出补救命令。
+
+    回归：此前上游代码是 `models/.../upstream/` 里的 zip 快照，报错只说"模型/代码
+    不存在"；现在两者分开报，代码缺失这条给出 `git submodule update --init`。
+    """
+    (tmp_path / "model.onnx").write_bytes(b"stub")
+    monkeypatch.setattr(server, "HUBERTFA_ROOT", tmp_path)
+    monkeypatch.setattr(server, "HUBERTFA_CODE", tmp_path / "nope")
+    monkeypatch.setattr(server, "_inference", None)
+
+    with pytest.raises(Exception, match=r"git submodule update --init"):
+        server._load_inference()
