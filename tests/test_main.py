@@ -1,144 +1,24 @@
-"""批处理 CLI 的文件发现与资源复用测试。"""
+"""CLI 入口的装配与编排。
+
+逻辑本身住在包里（见 ``test_batch.py`` / ``test_aligner_backends.py``），这里只测
+``main.py`` 自己的职责：把参数解成包的入参、复用 worker、逐项回收资源。
+"""
 
 from __future__ import annotations
 
 import argparse
-import importlib.util
-import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-_MAIN_PATH = Path(__file__).parent.parent / "main.py"
-_MAIN_SPEC = importlib.util.spec_from_file_location("karakara_main", _MAIN_PATH)
-assert _MAIN_SPEC is not None and _MAIN_SPEC.loader is not None
-main = importlib.util.module_from_spec(_MAIN_SPEC)
-sys.modules[_MAIN_SPEC.name] = main
-_MAIN_SPEC.loader.exec_module(main)
+from karakara import backends
+from karakara.backends import ALIGNER_BACKENDS, SEPARATOR_BACKENDS
 
 
 def _write_pair(directory: Path, stem: str, suffix: str = ".flac") -> None:
     (directory / f"{stem}.lrc").write_text("[00:00.00]test", encoding="utf-8")
     (directory / f"{stem}{suffix}").write_bytes(b"audio")
-
-
-def test_discover_batch_jobs_preserves_relative_output_paths(tmp_path: Path) -> None:
-    nested = tmp_path / "album"
-    nested.mkdir()
-    _write_pair(tmp_path, "first")
-    _write_pair(nested, "second")
-    (tmp_path / "old.kara.lrc").write_text("ignored", encoding="utf-8")
-
-    result = main.discover_batch_jobs(tmp_path, tmp_path / "out")
-
-    assert result.skipped == []
-    assert [(job.lyrics_path.name, job.audio_path.name) for job in result.jobs] == [
-        ("second.lrc", "second.flac"),
-        ("first.lrc", "first.flac"),
-    ]
-    assert [job.output_path.relative_to(tmp_path / "out") for job in result.jobs] == [
-        Path("album/second.kara.lrc"),
-        Path("first.kara.lrc"),
-    ]
-
-
-def test_discover_batch_jobs_rejects_ambiguous_audio_in_strict_mode(
-    tmp_path: Path,
-) -> None:
-    _write_pair(tmp_path, "song", ".flac")
-    (tmp_path / "song.mp3").write_bytes(b"audio")
-
-    with pytest.raises(ValueError, match="exactly one audio"):
-        main.discover_batch_jobs(tmp_path, strict=True)
-
-
-def test_discover_batch_jobs_skips_bad_pairs_by_default(tmp_path: Path) -> None:
-    """默认必须宽松：一个坏配对不能拖垮整个曲库。
-
-    回归测试：真实曲库（6622 个 LRC）里有 86 个 LRC 没有同名音频，而此前
-    ``discover_batch_jobs`` 会在第一个这样的文件上抛异常，于是连能配对的
-    6536 首也一首都不会处理。
-    """
-    _write_pair(tmp_path, "good")
-    (tmp_path / "orphan.lrc").write_text("[00:00.00]no audio", encoding="utf-8")
-
-    result = main.discover_batch_jobs(tmp_path)
-
-    assert [job.lyrics_path.name for job in result.jobs] == ["good.lrc"]
-    assert [(item.lyrics_path.name, item.reason) for item in result.skipped] == [
-        ("orphan.lrc", "none")
-    ]
-
-
-def test_discover_batch_jobs_lists_each_directory_once(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """发现阶段每个目录只枚举一次。
-
-    回归：大曲库里几千个 LRC 常挤在同一个目录，逐行 ``iterdir()`` 会把同一批目录
-    条目重复枚举几百万次——实测某 6600 个 LRC 的真实曲库上，发现阶段因此超过
-    10 分钟未跑完（缓存后 1.8s）。
-    """
-    for index in range(20):
-        _write_pair(tmp_path, f"song{index}")
-
-    calls: list[Path] = []
-    real_iterdir = Path.iterdir
-
-    def counting_iterdir(self: Path) -> object:
-        calls.append(self)
-        return real_iterdir(self)
-
-    monkeypatch.setattr(Path, "iterdir", counting_iterdir)
-
-    result = main.discover_batch_jobs(tmp_path)
-
-    assert len(result.jobs) == 20
-    assert calls.count(tmp_path) == 1
-
-
-def test_run_batch_reuses_workers_and_releases_after_each_job(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    _write_pair(tmp_path, "one")
-    _write_pair(tmp_path, "two")
-    processed: list[object] = []
-    released: list[None] = []
-    created_aligners: list[object] = []
-    created_separators: list[object] = []
-
-    class FakeAligner:
-        def __init__(self, **_kwargs: object) -> None:
-            created_aligners.append(self)
-
-        def close(self) -> None:
-            pass
-
-    class FakeSeparator:
-        def __init__(self, **_kwargs: object) -> None:
-            pass
-
-        def close(self) -> None:
-            pass
-
-    def create_separator(**_kwargs: object) -> FakeSeparator:
-        separator = FakeSeparator()
-        created_separators.append(separator)
-        return separator
-
-    monkeypatch.setattr(main, "HttpAligner", FakeAligner)
-    monkeypatch.setattr(main, "SubprocessStemSeparator", create_separator)
-    monkeypatch.setattr(main.MetadataFilter, "from_file", lambda _path: object())
-    monkeypatch.setattr(
-        main, "process_job", lambda job, **_kwargs: processed.append(job)
-    )
-    monkeypatch.setattr(main, "release_item_resources", lambda: released.append(None))
-
-    assert main.run_batch(_batch_args(tmp_path)) == 0
-    assert len(processed) == 2
-    assert len(released) == 2
-    assert len(created_aligners) == 1
-    assert len(created_separators) == 1
 
 
 def _batch_args(batch_dir: Path, **overrides: object) -> argparse.Namespace:
@@ -188,29 +68,131 @@ def _separator_args(**overrides: object) -> argparse.Namespace:
     return argparse.Namespace(**base)
 
 
-def test_build_separator_uses_uv_script_for_demucs() -> None:
+def _aligner_args(**overrides: object) -> argparse.Namespace:
+    base: dict[str, object] = {
+        "aligner_backend": "hfa",
+        "aligner_url": None,
+        "aligner_timeout": 120.0,
+    }
+    base.update(overrides)
+    return argparse.Namespace(**base)
+
+
+# --------------------------------------------------------------------------
+# run_batch：共享 worker、逐项回收
+# --------------------------------------------------------------------------
+
+
+def test_run_batch_reuses_workers_and_releases_after_each_job(
+    main_module: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _write_pair(tmp_path, "one")
+    _write_pair(tmp_path, "two")
+    processed: list[object] = []
+    released: list[None] = []
+    created_aligners: list[object] = []
+    created_separators: list[object] = []
+
+    class FakeAligner:
+        def __init__(self, **_kwargs: object) -> None:
+            created_aligners.append(self)
+
+        def close(self) -> None:
+            pass
+
+    class FakeSeparator:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    def create_separator(**_kwargs: object) -> FakeSeparator:
+        separator = FakeSeparator()
+        created_separators.append(separator)
+        return separator
+
+    monkeypatch.setattr(main_module, "HttpAligner", FakeAligner)
+    # 分离器的构造在包里（`karakara.backends.build_separator`），所以要打在它身上。
+    monkeypatch.setattr(backends, "SubprocessStemSeparator", create_separator)
+    monkeypatch.setattr(main_module.MetadataFilter, "from_file", lambda _path: object())
+    monkeypatch.setattr(
+        main_module, "process_job", lambda job, **_kwargs: processed.append(job)
+    )
+    monkeypatch.setattr(
+        main_module, "release_item_resources", lambda: released.append(None)
+    )
+
+    assert main_module.run_batch(_batch_args(tmp_path)) == 0
+    assert len(processed) == 2
+    assert len(released) == 2
+    assert len(created_aligners) == 1
+    assert len(created_separators) == 1
+
+
+def test_run_batch_reports_failures_without_stopping(
+    main_module: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """一个任务失败不该终止整批：退出码非 0、但其余任务照跑。"""
+    _write_pair(tmp_path, "one")
+    _write_pair(tmp_path, "two")
+    attempted: list[str] = []
+
+    class FakeAligner:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    class FakeSeparator:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    def fake_process(job: object, **_kwargs: object) -> None:
+        attempted.append(str(job))
+        if len(attempted) == 1:
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(main_module, "HttpAligner", FakeAligner)
+    monkeypatch.setattr(backends, "SubprocessStemSeparator", FakeSeparator)
+    monkeypatch.setattr(main_module.MetadataFilter, "from_file", lambda _path: object())
+    monkeypatch.setattr(main_module, "process_job", fake_process)
+
+    assert main_module.run_batch(_batch_args(tmp_path)) == 1
+    assert len(attempted) == 2
+
+
+# --------------------------------------------------------------------------
+# build_separator / build_aligner
+# --------------------------------------------------------------------------
+
+
+def test_build_separator_uses_uv_script_for_demucs(main_module: Any) -> None:
     """默认后端走 uv 管理的独立环境，主环境的依赖里因此不需要 torch。"""
-    separator = main.build_separator(_separator_args())
+    separator = main_module.build_separator(_separator_args())
 
     assert separator.command[:3] == ["uv", "run", "--script"]
-    assert separator.command[3].endswith("scripts/separator_worker.py")
-    assert "separator_worker_audio_separator.py" not in separator.command[3]
+    assert separator.command[3].endswith(SEPARATOR_BACKENDS["demucs"].script)
 
 
-def test_build_separator_selects_audio_separator_backend() -> None:
-    separator = main.build_separator(
+def test_build_separator_selects_audio_separator_backend(main_module: Any) -> None:
+    separator = main_module.build_separator(
         _separator_args(
             separator_backend="audio-separator",
             separator_model="UVR_MDXNET_KARA_2.onnx",
         )
     )
 
-    assert separator.command[3].endswith("scripts/separator_worker_audio_separator.py")
+    assert separator.command[3].endswith(SEPARATOR_BACKENDS["audio-separator"].script)
 
 
-def test_explicit_separator_cmd_wins_over_backend() -> None:
+def test_explicit_separator_cmd_wins_over_backend(main_module: Any) -> None:
     """显式命令优先级最高：便于接自有环境或远程 worker。"""
-    separator = main.build_separator(
+    separator = main_module.build_separator(
         _separator_args(
             separator_cmd=["C:/some/python.exe", "my_worker.py"],
             separator_backend="audio-separator",
@@ -220,7 +202,90 @@ def test_explicit_separator_cmd_wins_over_backend() -> None:
     assert separator.command == ["C:/some/python.exe", "my_worker.py"]
 
 
-def test_all_separator_backends_have_a_worker_script() -> None:
-    """每个后端选项都必须指向真实存在的 worker 脚本。"""
-    for backend, script in main._SEPARATOR_WORKERS.items():
-        assert Path(script).is_file(), f"后端 {backend} 的 worker 脚本不存在: {script}"
+def test_build_aligner_uses_the_backend_default_url(
+    main_module: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recorded: dict[str, object] = {}
+
+    class FakeAligner:
+        def __init__(self, **kwargs: object) -> None:
+            recorded.update(kwargs)
+
+    monkeypatch.setattr(main_module, "HttpAligner", FakeAligner)
+
+    main_module.build_aligner(_aligner_args(aligner_backend="qwen3"))
+    assert recorded["base_url"] == ALIGNER_BACKENDS["qwen3"].default_url
+    assert recorded["timeout"] == 120.0
+
+    main_module.build_aligner(
+        _aligner_args(aligner_backend="qwen3", aligner_url="http://other:9000")
+    )
+    assert recorded["base_url"] == "http://other:9000"
+
+
+def test_build_aligner_turns_non_positive_timeout_into_none(
+    main_module: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recorded: dict[str, object] = {}
+
+    class FakeAligner:
+        def __init__(self, **kwargs: object) -> None:
+            recorded.update(kwargs)
+
+    monkeypatch.setattr(main_module, "HttpAligner", FakeAligner)
+
+    main_module.build_aligner(_aligner_args(aligner_timeout=0.0))
+    assert recorded["timeout"] is None
+
+
+# --------------------------------------------------------------------------
+# main()：语言能力在开跑前拦截
+# --------------------------------------------------------------------------
+
+
+def test_main_rejects_a_language_the_backend_lacks(
+    main_module: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`hfa` 不支持 yue/ko：必须在开跑前以退出码 2 拦下，并指出能用的后端。
+
+    回归：此前这条路径要跑到服务端才拿到 400，而那时人声分离已经白跑完了。
+    """
+    with pytest.raises(SystemExit) as info:
+        main_module.main(
+            ["--lyrics", "a.lrc", "--audio", "a.flac", "--aligner-language", "ko"]
+        )
+
+    assert info.value.code == 2
+    stderr = capsys.readouterr().err
+    assert "不支持语言" in stderr
+    assert "qwen3" in stderr
+
+
+def test_main_accepts_the_same_language_on_qwen3(
+    main_module: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """同一个语言在 qwen3 上不该被拦（拦的是能力，不是语言本身）。"""
+    seen: list[argparse.Namespace] = []
+
+    def fake_run_single(args: argparse.Namespace) -> int:
+        seen.append(args)
+        return 0
+
+    monkeypatch.setattr(main_module, "run_single", fake_run_single)
+
+    with pytest.raises(SystemExit):
+        main_module.main(
+            [
+                "--lyrics",
+                "a.lrc",
+                "--audio",
+                "a.flac",
+                "--aligner-backend",
+                "qwen3",
+                "--aligner-language",
+                "ko",
+            ]
+        )
+
+    assert len(seen) == 1
+    assert seen[0].aligner_language == "ko"

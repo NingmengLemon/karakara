@@ -1,92 +1,45 @@
+"""CLI 入口：只做参数解析与装配，逻辑在 :mod:`karakara` 包里。
+
+这里刻意保留三样东西：参数解析器、两个运行模式（单文件/批处理）的**编排**、
+以及仓库自带配置文件的定位。真正的逻辑（发现配对、跑一组输入、后端登记表、
+文件对话框）都在包本体里，可以被直接测试。
+"""
+
 from __future__ import annotations
 
 import argparse
-import gc
-from dataclasses import dataclass
-from os import PathLike
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Literal
 
-from lemony_lrc_parser import Lyrics, SerializationOptions
-
+from karakara import backends
 from karakara.aligner import HttpAligner
-from karakara.core import ExistingBywordPolicy, gen_kara
+from karakara.backends import (
+    ALIGNER_BACKENDS,
+    DEFAULT_ALIGNER_BACKEND,
+    DEFAULT_SEPARATOR_BACKEND,
+    SEPARATOR_BACKENDS,
+    UnsupportedAlignerLanguage,
+)
+from karakara.batch import (
+    BatchJob,
+    discover_batch_jobs,
+    process_job,
+    release_item_resources,
+)
+from karakara.interactive import ask_for_input_file, ask_for_output_path
 from karakara.logging import setup_logging
 from karakara.preprocess import AudioPreprocessConfig
 from karakara.separator import SubprocessStemSeparator
 from karakara.utils.metadata import MetadataFilter
-
-_AUDIO_SUFFIXES = frozenset({".wav", ".mp3", ".flac", ".m4a"})
-
-#: 后端 → worker 脚本。两者使用同一套行协议，所以主程序只认命令、不认后端。
-_SEPARATOR_WORKERS = {
-    "demucs": "scripts/separator_worker.py",
-    "audio-separator": "scripts/separator_worker_audio_separator.py",
-}
-
-#: 对齐后端 → (服务脚本, 默认地址)。两者提供**同一套 `/align` 契约**，所以主程序
-#: 只认地址、不认后端：换后端 = 换个端口，代码路径完全一致。
-#:
-#: * ``hfa``  —— HuberFA（歌声专用，10ms 帧，逐字/逐词都有真实时长）。实测在
-#:   Qwen 把歌词压扁的行上是对的，见 docs/aligner-backends.md §9。
-#: * ``qwen3``—— Qwen3-ForcedAligner（多语言通用，边界量化在 80ms，零长度词多）。
-_ALIGNER_BACKENDS: dict[str, tuple[str, str]] = {
-    "hfa": ("scripts/hubertfa_aligner_server.py", "http://127.0.0.1:8788"),
-    "qwen3": ("scripts/qwen3aligner_server.py", "http://127.0.0.1:8787"),
-}
 
 #: 仓库自带的元数据过滤配置。刻意相对**本文件**定位而不是 CWD，
 #: 否则从别的目录运行就会去找那个目录下的同名文件（然后 FileNotFoundError）。
 _DEFAULT_METADATA_FILTER = Path(__file__).resolve().parent / "metadata_filter.toml"
 
 
-@dataclass(frozen=True)
-class BatchJob:
-    """一组同名歌词与音频的批处理任务。"""
-
-    lyrics_path: Path
-    audio_path: Path
-    output_path: Path
-
-
-def ask_for_input_file(type_: Literal["lyrics", "audio"]) -> str:
-    """使用文件对话框请求输入文件。"""
-    import tkinter as tk
-    from tkinter import filedialog as fd
-
-    root = tk.Tk()
-    root.withdraw()
-    if type_ == "lyrics":
-        filetypes = [("LRC files", "*.lrc"), ("All files", "*.*")]
-    else:
-        filetypes = [("Audio files", "*.wav *.mp3 *.flac *.m4a"), ("All files", "*.*")]
-    file_path = fd.askopenfilename(
-        parent=root,
-        title=f"Select an {type_} file",
-        filetypes=filetypes,
-    )
-    root.destroy()
-    return file_path
-
-
-def ask_for_output_path(default_file: PathLike[str]) -> str:
-    """使用文件对话框请求输出路径。"""
-    import tkinter as tk
-    from tkinter import filedialog as fd
-
-    default_file = Path(default_file).resolve()
-    root = tk.Tk()
-    root.withdraw()
-    file_path = fd.asksaveasfilename(
-        parent=root,
-        title="Select output file path",
-        defaultextension=".lrc",
-        filetypes=[("LRC files", "*.lrc"), ("All files", "*.*")],
-        initialfile=default_file.name,
-        initialdir=default_file.parent,
-    )
-    root.destroy()
-    return file_path
+def _describe(descriptions: Iterable[str]) -> str:
+    """把登记表里的描述渲染成 argparse 的 help 片段（同一段话只写一遍）。"""
+    return "；".join(descriptions)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -140,20 +93,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--aligner-backend",
-        choices=tuple(_ALIGNER_BACKENDS),
-        default="hfa",
+        choices=tuple(ALIGNER_BACKENDS),
+        default=DEFAULT_ALIGNER_BACKEND,
         help=(
-            "对齐后端（默认: hfa）。两者是独立服务、共用同一套 /align 契约："
-            "hfa=HubertFA（歌声专用，10ms 帧，实测在 Qwen 压扁歌词的行上更准）；"
-            "qwen3=Qwen3-ForcedAligner（多语言通用，80ms 量化、零长度词多）"
+            f"对齐后端（默认: {DEFAULT_ALIGNER_BACKEND}）。两者是独立服务、共用同一套 "
+            f"/align 契约：{_describe(b.description for b in ALIGNER_BACKENDS.values())}"
         ),
     )
     parser.add_argument(
         "--aligner-url",
         default=None,
         help=(
-            "对齐服务地址；缺省按 --aligner-backend 选（hfa → http://127.0.0.1:8788，"
-            "qwen3 → http://localhost:8787）"
+            "对齐服务地址；缺省按 --aligner-backend 选（"
+            + "，".join(f"{n} → {b.default_url}" for n, b in ALIGNER_BACKENDS.items())
+            + "）"
         ),
     )
     parser.add_argument(
@@ -175,6 +128,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--aligner-language",
+        # 选项集合是两个后端语言能力的**并集**（yue/ko 只有 qwen3 支持），
+        # 所以选了 hfa 又给 yue/ko 时由 main() 在开跑前拦下。
         choices=("auto", "zh", "ja", "en", "yue", "ko"),
         default="auto",
         help="送给对齐器的语言；auto=按整首歌的行级多数票判定（默认: auto）",
@@ -224,12 +179,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--separator-backend",
-        choices=("demucs", "audio-separator"),
-        default="demucs",
+        choices=tuple(SEPARATOR_BACKENDS),
+        default=DEFAULT_SEPARATOR_BACKEND,
         help=(
-            "分离后端（默认: demucs）。两者都是独立 worker 进程，主环境都不需要 torch。"
-            "audio-separator 的价值是人声质量（MDX/VR/RoFormer 等模型），代价是它的"
-            "环境更重；需要配合 --separator-model 指定模型文件名"
+            f"分离后端（默认: {DEFAULT_SEPARATOR_BACKEND}）。两者都是独立 worker 进程，"
+            f"主环境都不需要 torch："
+            f"{_describe(b.description for b in SEPARATOR_BACKENDS.values())}"
         ),
     )
     parser.add_argument(
@@ -284,184 +239,41 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-@dataclass(frozen=True)
-class UnpairedLyrics:
-    """一个找不到唯一同名音频、因而无法处理的 LRC。"""
-
-    lyrics_path: Path
-    reason: str
-
-
-@dataclass(frozen=True)
-class DiscoveryResult:
-    """批处理发现的结果：可处理的配对 + 被跳过的 LRC。"""
-
-    jobs: list[BatchJob]
-    skipped: list[UnpairedLyrics]
-
-
-def discover_batch_jobs(
-    input_dir: Path,
-    output_dir: Path | None = None,
-    *,
-    strict: bool = False,
-) -> DiscoveryResult:
-    """递归发现同目录、同文件名的 LRC/音频对。
-
-    已生成的 ``*.kara.lrc`` 会被排除。找不到音频或同名音频不唯一的 LRC 默认
-    **跳过并汇总**（``strict=True`` 时改为直接抛 ``ValueError``）。
-
-    默认必须宽松：真实曲库里总会有少量 LRC 没有配套音频（人工泄漏、翻译稿、
-    只有 instrumental 等）。实测在 6622 首的曲库上有 86 个这样的文件——若按
-    「一个坏配对就抛异常」，整个批处理连能配对的 6536 首都不会处理。
-    """
-    if not input_dir.is_dir():
-        raise ValueError(f"batch directory does not exist: {input_dir}")
-
-    # 每个目录只枚举一次：大曲库里几千个 LRC 常挤在少数几个目录（实测某曲库
-    # 6600+ 个 LRC 集中在 ~1000 文件级的根目录），逐行 iterdir() 会把同一批目录
-    # 条目重复枚举几百万次，Windows 上足以让「发现阶段」从秒级涨到分钟级。
-    audio_index: dict[Path, dict[str, list[Path]]] = {}
-
-    def audio_by_stem(directory: Path) -> dict[str, list[Path]]:
-        index = audio_index.get(directory)
-        if index is None:
-            index = {}
-            for entry in directory.iterdir():
-                if entry.is_file() and entry.suffix.lower() in _AUDIO_SUFFIXES:
-                    index.setdefault(entry.stem, []).append(entry)
-            for paths in index.values():
-                paths.sort()
-            audio_index[directory] = index
-        return index
-
-    jobs: list[BatchJob] = []
-    skipped: list[UnpairedLyrics] = []
-    for lyrics_path in sorted(input_dir.rglob("*.lrc")):
-        if lyrics_path.stem.endswith(".kara"):
-            continue
-        candidates = audio_by_stem(lyrics_path.parent).get(lyrics_path.stem, [])
-        if len(candidates) != 1:
-            description = (
-                "none"
-                if not candidates
-                else ", ".join(str(path) for path in candidates)
-            )
-            if strict:
-                raise ValueError(
-                    f"Expected exactly one audio file for {lyrics_path}, "
-                    f"found: {description}"
-                )
-            skipped.append(UnpairedLyrics(lyrics_path, description))
-            continue
-        if output_dir is None:
-            output_path = lyrics_path.with_suffix(".kara.lrc")
-        else:
-            relative = lyrics_path.relative_to(input_dir)
-            output_path = output_dir / relative.with_suffix(".kara.lrc")
-        jobs.append(BatchJob(lyrics_path, candidates[0], output_path))
-    return DiscoveryResult(jobs=jobs, skipped=skipped)
-
-
-def save_lyrics(lyrics: Lyrics, output_path: Path) -> None:
-    """按兼容 foobar2000 的格式写入逐字 LRC。"""
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(
-        lyrics.dumps(
-            options=SerializationOptions(
-                use_bracket_for_byword_tag=True,
-                line_tag_decimal_length=3,
-                word_tag_decimal_length=3,
-            )
-        ),
-        encoding="utf-8",
-    )
-
-
 def build_separator(args: argparse.Namespace) -> SubprocessStemSeparator:
-    """按 CLI 选项构造分离器。
-
-    ``--separator-cmd`` 优先；否则按 ``--separator-backend`` 选脚本，用
-    ``uv run --script`` 拉起（worker 脚本头部自带 PEP 723 内联依赖）。
-    """
-    command = args.separator_cmd
-    if command is None:
-        command = ["uv", "run", "--script", _SEPARATOR_WORKERS[args.separator_backend]]
-    return SubprocessStemSeparator(
-        command=command,
+    """按 CLI 选项构造分离器（``--separator-cmd`` 优先级最高）。"""
+    return backends.build_separator(
+        args.separator_backend,
+        command=args.separator_cmd,
         model=args.separator_model,
         device=args.separator_device,
         model_dir=args.separator_model_dir,
-        request_timeout=_resolve_timeout(args.separator_timeout),
+        request_timeout=backends.resolve_timeout(args.separator_timeout),
     )
 
 
-def process_job(
-    job: BatchJob,
-    *,
-    aligner: HttpAligner,
-    separator: SubprocessStemSeparator,
-    metadata_filter: MetadataFilter,
-    preprocess_config: AudioPreprocessConfig,
-    dump_dir: Path | None,
-    separate_work_dir: Path | None,
-    offset_ms: float | None,
-    min_vocal_activity: float,
-    existing_byword_policy: ExistingBywordPolicy,
-    aligner_language: str = "auto",
-    target_lang: str | None = None,
-    refine_collapsed_words: bool = False,
-) -> None:
-    """处理一组输入，并在函数返回时释放该任务的大型音频对象。"""
-    lyrics = Lyrics.loads(job.lyrics_path.read_text(encoding="utf-8"))
-    aligned = gen_kara(
-        lyrics,
-        job.audio_path,
-        aligner=aligner,
-        separator=separator,
-        metadata_filter=metadata_filter,
-        preprocess_config=preprocess_config,
-        dump_dir=dump_dir,
-        separate_work_dir=separate_work_dir,
-        offset_ms=offset_ms,
-        min_vocal_activity=min_vocal_activity,
-        existing_byword_policy=existing_byword_policy,
-        aligner_language=aligner_language,
-        target_lang=target_lang,
-        refine_collapsed_words=refine_collapsed_words,
+def build_aligner(args: argparse.Namespace) -> HttpAligner:
+    """按 CLI 选项构造对齐客户端（地址按后端选，超时 ``<=0`` 视为不限）。"""
+    return HttpAligner(
+        base_url=backends.resolve_aligner_url(args.aligner_backend, args.aligner_url),
+        timeout=backends.resolve_timeout(args.aligner_timeout),
     )
-    save_lyrics(aligned, job.output_path)
 
 
-def release_item_resources() -> None:
-    """回收单个任务产生的 CPU/GPU 临时对象。
-
-    GPU 侧的资源现在由分离 worker 进程独自持有，主进程不再初始化 CUDA 上下文，
-    因此这里只需要回收 Python 对象。
-    """
-    gc.collect()
+def build_preprocess_config(args: argparse.Namespace) -> AudioPreprocessConfig:
+    """按 CLI 选项构造预处理配置。"""
+    return AudioPreprocessConfig(
+        normalize=not args.no_normalize,
+        suppress_vibrato=not args.no_vibrato_suppress,
+        compress=args.compress,
+    )
 
 
 def resolve_offset(args: argparse.Namespace) -> float | None:
-    """将 CLI 偏移选项转为流水线参数。"""
+    """将 CLI 偏移选项转为流水线参数（``--no-offset-estimate`` 等价于 ``--offset 0``）。"""
     if args.no_offset_estimate:
         return 0.0
     offset = args.offset
     return offset if isinstance(offset, float) else None
-
-
-def _resolve_timeout(value: float | None) -> float | None:
-    """把 CLI 的超时值转成 ``requests``/``Popen`` 语义：``<=0`` 表示不超时。"""
-    if value is None or value <= 0:
-        return None
-    return value
-
-
-def resolve_aligner_url(args: argparse.Namespace) -> str:
-    """对齐服务地址：``--aligner-url`` 优先，否则按 ``--aligner-backend`` 取默认值。"""
-    if args.aligner_url:
-        return str(args.aligner_url)
-    return _ALIGNER_BACKENDS[args.aligner_backend][1]
 
 
 def run_batch(args: argparse.Namespace) -> int:
@@ -485,16 +297,9 @@ def run_batch(args: argparse.Namespace) -> int:
         print(f"No matching LRC/audio pairs found under: {input_dir}")
         return 0
 
-    preprocess_config = AudioPreprocessConfig(
-        normalize=not args.no_normalize,
-        suppress_vibrato=not args.no_vibrato_suppress,
-        compress=args.compress,
-    )
+    preprocess_config = build_preprocess_config(args)
     metadata_filter = MetadataFilter.from_file(args.metadata_filter)
-    aligner = HttpAligner(
-        base_url=resolve_aligner_url(args),
-        timeout=_resolve_timeout(args.aligner_timeout),
-    )
+    aligner = build_aligner(args)
     separator = build_separator(args)
     failures = 0
     try:
@@ -553,15 +358,7 @@ def run_single(args: argparse.Namespace) -> int:
         return 0
 
     job = BatchJob(Path(lyrics_src), Path(audio_src), Path(output_src))
-    preprocess_config = AudioPreprocessConfig(
-        normalize=not args.no_normalize,
-        suppress_vibrato=not args.no_vibrato_suppress,
-        compress=args.compress,
-    )
-    aligner = HttpAligner(
-        base_url=resolve_aligner_url(args),
-        timeout=_resolve_timeout(args.aligner_timeout),
-    )
+    aligner = build_aligner(args)
     separator = build_separator(args)
     try:
         process_job(
@@ -569,7 +366,7 @@ def run_single(args: argparse.Namespace) -> int:
             aligner=aligner,
             separator=separator,
             metadata_filter=MetadataFilter.from_file(args.metadata_filter),
-            preprocess_config=preprocess_config,
+            preprocess_config=build_preprocess_config(args),
             dump_dir=args.dump_dir,
             separate_work_dir=args.sep_work_dir,
             offset_ms=resolve_offset(args),
@@ -589,7 +386,17 @@ def run_single(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> None:
     """解析 CLI 参数后执行单文件或批量对齐。"""
     setup_logging()
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    # 语言能力在**开跑之前**检查：不受支持的语言若留到服务端才报 400，
+    # 人声分离（几十秒）已经白跑完了。
+    try:
+        backends.ensure_aligner_language(
+            args.aligner_backend,
+            None if args.aligner_language == "auto" else args.aligner_language,
+        )
+    except UnsupportedAlignerLanguage as exc:
+        parser.error(str(exc))
     if args.batch_dir is not None:
         raise SystemExit(run_batch(args))
     raise SystemExit(run_single(args))
