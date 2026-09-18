@@ -21,9 +21,10 @@
 ## 快速开始
 
 ```bash
-# ① 先起对齐服务（默认后端 hfa → 127.0.0.1:8788；换 qwen3 见下）
+# ① 先起对齐服务（默认后端 hfa → 127.0.0.1:8788）
 uv run --script scripts/hubertfa_aligner_server.py
-# 用旧的 Qwen3 后端： uv run --script scripts/qwen3aligner_server.py --aligner-backend qwen3
+# 用旧的 Qwen3 后端： uv run --script scripts/qwen3aligner_server.py
+#                    uv run main.py ... --aligner-backend qwen3
 
 # ② 单文件
 uv run main.py -l song.lrc -a song.flac -o song.kara.lrc
@@ -78,7 +79,7 @@ uv run --script scripts/separator_worker_audio_separator.py --list-models
 
 ## 最要紧的三条限制
 
-1. **词级精度下限是 80ms**，且实测有 **22.5%** 的词是零长度（最高一首 41.8%）——根因在模型的时间戳词表，不是本仓库的代码。见 [docs/aligner.md](docs/aligner.md)。
+1. **对齐精度取决于后端**：默认的 HubertFA 帧移 **10ms**（日文实测零长度单元 1.9%、行区间覆盖率 88.8%），代价是日文路径会丢掉促音、汉字读音靠猜；可选的 Qwen3 后端量化在 **80ms**、零长度词 22.5%（最高一首 41.8%）。见 [docs/aligner.md](docs/aligner.md) 与 [docs/aligner-backends.md](docs/aligner-backends.md)。
 2. **全局偏移估计不可靠**：两条能量判据各自都会错、且错在不同的歌上，所以自动偏移极度保守（证据不足就不动）。见 [docs/offset.md](docs/offset.md)。
 3. **LRC 与音频版本不匹配的输入无解**：此时任何全局常量偏移都不成立，需要人工发现。见 [docs/known-issues.md](docs/known-issues.md)。
 

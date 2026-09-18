@@ -1,0 +1,3 @@
+[submodule "third_party/HubertFA"]
+	path = third_party/HubertFA
+	url = https://github.com/wolfgitpr/HubertFA

@@ -416,15 +416,29 @@ SP 300-896 | so 896-1320 | ra 1320-1767 | no 1767-1859 | o 1859-3470
 3. 词典覆盖：本轮 260 个音节**全部命中词典键**（0 遗漏），无法转成假名的字符只有 `「」`。
 4. 老 `librosa`（`<0.10`）需要 `setuptools<81`（`pkg_resources` 在 setuptools 81 之后被移除）。
 
-### 9.2c 模型已迁到 `models/`
+### 9.2c 模型与上游代码分开放
 
-`models/aligner/HubertFA/`（`models/` 在 .gitignore 内，不进仓库）：`model.onnx` + `vocab.json` + `config.json` + 三个词典 + 上游代码快照 `upstream/`，共 416MB；来源、版本、下载通道与全部实测结论记录在同目录的 `SOURCE.md`。
+- **模型**：`models/aligner/HubertFA/`（`models/` 在 .gitignore 内，不进仓库）——
+  `model.onnx` + `vocab.json` + `config.json` + 三个词典，共 399MB；来源、版本、下载通道与
+  全部实测结论记录在同目录的 `SOURCE.md`。
+- **上游代码**：**git submodule** `third_party/HubertFA`，钉在
+  `b3f086966946255a05b0ccb69c865c8e3e806e0a`（`main` 的 `v0.0.7-10-gb3f0869`，2026-03-19）。
+  选 submodule 而不是把 `tools/*.py` 拷进仓库，是因为要的只是**一次实测过的快照**，
+  而它还会继续演进：submodule 保留了出处与提交号，且不把第三方代码混进本仓库的类型检查范围
+  （mypy/ty/ruff 都排除了 `third_party`）。落地时逐文件 SHA256 比对了旧的 zip 快照与
+  该提交的检出结果：139 个文件全部一致（只差换行符——本机 `core.autocrlf=true`）。
+  代价是首次使用要 `git submodule update --init third_party/HubertFA`；没初始化时服务端会
+  返回 503 并直接给出这条命令，而不是一个 ImportError。
 
 ### 9.4 复现方式
 
-模型与上游代码现在放在 **`models/aligner/HubertFA/`**（`models/` 在 .gitignore 内；来源与坑见该目录的 `SOURCE.md`），中间产物由脚本重新生成到 `tmp/`。
+模型与上游代码现在分开放：**模型**在 `models/aligner/HubertFA/`（`models/` 在 .gitignore 内；
+来源与坑见该目录的 `SOURCE.md`），**上游代码**是 submodule `third_party/HubertFA`。中间产物由脚本重新生成到 `tmp/`。
 
 ```powershell
+# 上游代码（submodule，钉在实测过的提交上）
+git submodule update --init third_party/HubertFA
+
 # 通道：HF 直连，GitHub 走 gh-proxy.com
 curl.exe -sL -o hfa.zip "https://gh-proxy.com/https://github.com/wolfgitpr/HubertFA/releases/download/v0.0.7/1218_hfa_model_new_dict.zip"
 
@@ -433,10 +447,11 @@ uv run --with pykakasi python tmp/hfa_prepare_ja.py     # 生成 tmp/hfa/segment
 uv run python tmp/hfa_prepare_zh.py                     # 生成 tmp/hfa/segments/
 
 # 跑 HubertFA（注意 setuptools<81：老 librosa 需要 pkg_resources）
-cd models/aligner/HubertFA/upstream
+cd third_party/HubertFA
 uv run --no-project --with "setuptools<81" --with click --with "librosa<0.10.0" --with textgrid `
   --with pandas --with pyyaml --with tqdm --with onnxruntime --with soundfile --with "numpy<2" `
-  python onnx_infer.py -m ../model.onnx -wf <wav 目录> -l ja -d ../japanese_dict_full.txt
+  python onnx_infer.py -m ../../models/aligner/HubertFA/model.onnx -wf <wav 目录> -l ja `
+  -d ../../models/aligner/HubertFA/japanese_dict_full.txt
 
 # 对比（同一批片段跑 Qwen，并解析 TextGrid）
 uv run python tmp/hfa_compare_ja.py

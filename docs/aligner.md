@@ -22,7 +22,9 @@ uv run main.py ... --aligner-url http://other-host:9000           # 或直接指
 100% vs 77%，零长度单元 0% vs 41.8%。代价与已知限制（促音被丢、汉字读音靠猜）见该文档。
 
 HubertFA 需要 `Qwen3-ForcedAligner-0.6B` 之外的模型与词典，放在 `models/aligner/HubertFA/`
-（`models/` 不进仓库，来源与下载命令见该目录的 `SOURCE.md`）；缺失时服务会返回明确的 503。
+（`models/` 不进仓库，来源与下载命令见该目录的 `SOURCE.md`）；它的上游代码是 submodule
+`third_party/HubertFA`（首次使用需 `git submodule update --init third_party/HubertFA`）。
+两者缺失时服务都会返回**带补救命令的 503**，而不是一个裸 ImportError。
 
 ## 响应形状是契约的一部分
 

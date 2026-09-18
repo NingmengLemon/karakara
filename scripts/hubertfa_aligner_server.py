@@ -30,7 +30,7 @@ HubertFA 是**为歌声训练**的强制对齐器（SOFA 血统，ONNX，10ms �
 
 1. **G2P**：行文本 → 音节序列（zh 用 `pypinyin`，ja 用 `pykakasi` + 音节规则），并**记住
    每个音节来自哪一段原文**；
-2. 跑模型（复用上游 `onnx_infer.py` 的代码，见 `HUBERTFA_ROOT`）；
+2. 跑模型（复用上游 `onnx_infer.py` 的代码，见 `HUBERTFA_CODE`）；
 3. **把音素/モーラ 聚合回原文的片段**——返回单元的 `text` 必须是原行文本的**子串序列**，
    否则主程序的 `_build_aligned_content`（靠 `text.find` 定位）会映射失败。
 
@@ -63,8 +63,11 @@ logger = logging.getLogger("karakara.hubertfa_server")
 
 #: 项目根目录（本脚本在 <root>/scripts/ 下）。
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-#: 模型与上游代码位置（`models/` 不进仓库；来源与下载命令见该目录的 SOURCE.md）。
+#: 模型位置（`models/` 不进仓库；来源与下载命令见该目录的 SOURCE.md）。
 HUBERTFA_ROOT = PROJECT_ROOT / "models" / "aligner" / "HubertFA"
+#: 上游代码位置。**git submodule**，钉在 v0.0.7 之后、本服务实测过的那次提交上
+#: （`b3f0869`，2026-03-19）。没初始化时 `_load_inference` 会给出可执行的补救命令。
+HUBERTFA_CODE = PROJECT_ROOT / "third_party" / "HubertFA"
 DEFAULT_HOST = "127.0.0.1"
 #: 与 qwen 服务的 8787 区分开，便于同时起两个后端做 A/B。
 DEFAULT_PORT = 8788
@@ -396,16 +399,23 @@ def _load_inference() -> Any:
     if _inference is not None:
         return _inference
     model_path = HUBERTFA_ROOT / "model.onnx"
-    upstream = HUBERTFA_ROOT / "upstream"
-    if not model_path.is_file() or not upstream.is_dir():
+    if not model_path.is_file():
         raise HTTPException(
             status_code=503,
             detail=(
-                f"HubertFA 模型/代码不存在：{HUBERTFA_ROOT}。"
+                f"HubertFA 模型不存在：{model_path}。"
                 f"下载方式见 models/aligner/HubertFA/SOURCE.md"
             ),
         )
-    sys.path.insert(0, str(upstream))
+    if not (HUBERTFA_CODE / "onnx_infer.py").is_file():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"HubertFA 上游代码未就绪：{HUBERTFA_CODE}（git submodule）。"
+                f"先运行：git submodule update --init third_party/HubertFA"
+            ),
+        )
+    sys.path.insert(0, str(HUBERTFA_CODE))
     from onnx_infer import InferenceOnnx  # type: ignore[import-not-found]
 
     inference = InferenceOnnx(onnx_path=model_path)
@@ -551,6 +561,16 @@ def align(
     if not responses:
         raise HTTPException(status_code=500, detail="对齐器没有返回任何结果")
     return responses if is_batch else responses[0]
+
+
+@app.get("/supported_languages")
+def supported_languages() -> list[str]:
+    """本服务能处理的语言（与 ``qwen3aligner_server.py`` 同名端点，便于统一探测）。
+
+    返回的是**短代码**，即 ``_LANGUAGE_ALIASES`` 的值域。主程序侧的语言能力登记表
+    与此处的漂移由 ``tests/test_aligner_backends.py`` 机械检查。
+    """
+    return sorted(set(_LANGUAGE_ALIASES.values()))
 
 
 @app.get("/health")
