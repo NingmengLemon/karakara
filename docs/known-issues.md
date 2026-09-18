@@ -13,6 +13,8 @@
 - **配置路径**：`metadata_filter.toml` 此前按 CWD 加载（换目录运行即 `FileNotFoundError`），现在按项目根目录定位并可用 `--metadata-filter` 覆盖；`audio-separator` worker 的默认模型目录与对齐服务的模型路径同理。
 - **元数据行滤除**：关键字从 28 项扩到约 200 项、打开 `parenthetical`/`id3_tags`、支持全角括号、新增 7 条自定义正则。度量与全部假阳性证据见 [metadata-filter.md](metadata-filter.md)。
 - **对齐语言**。此前语言在构造时硬编码为 `Chinese`，`gen_kara` 算出的语言判定结果从未被使用，于是英文/日文歌全部按中文对齐。见 [aligner.md](aligner.md)。
+- **对齐后端的语言能力此前只存在于服务端**。`--aligner-language` 的选项是两个后端语言集合的并集（`yue`/`ko` 只有 qwen3 支持），于是 `--aligner-language ko` 配 `hfa` 会一路跑到服务端才拿到 400——那时人声分离（几十秒）已经白跑完。现在能力进了 `src/karakara/backends.py` 的登记表，`main()` 在开跑前检查并以退出码 2 报错，消息里直接给出能用的后端；`tests/test_aligner_backends.py` 另有一道防漂移检查，保证登记表与服务端真正接受的语言一致。
+- **HubertFA 的上游代码从 zip 快照改为 git submodule**（`third_party/HubertFA`，钉在 `b3f0869`）。快照没有出处与提交号、换台机器就没了（`models/` 在 .gitignore 内）；submodule 只让仓库多一个 gitlink，且能把第三方代码排除在 mypy/ty/ruff 之外。模型权重仍在 gitignored 的 `models/aligner/HubertFA/`。
 - **`separator/demucs/patch.py` 已删除**：它 module-level 去 patch `demucs.states.load_model`，但全仓库没有任何地方 import 它，完全没生效。
 - **`scripts/demucs_separator_server.py` 已退役**（移到 `tmp/demucs_separator_server.py.retired`，gitignored、可恢复）：`src/` 下从来没有客户端实现它，而它的能力已被 `scripts/separator_worker.py` 覆盖——常驻子进程同样只加载一次模型，还不需要额外起一个常驻 HTTP 服务。以后若确实要跨机分离，更干净的做法是把 HTTP 变体放在同一套 worker 协议之后，而不是另立一套接口。
 - **主进程不再 `import torch`**，`release_item_resources()` 只剩 `gc.collect()`。
@@ -22,8 +24,9 @@
 
 ### 会影响产物质量
 
-- **词级精度下限 80ms，且实测 22.5% 的单元是零长度**（逐首 10.7%～41.8%）。根因是模型的时间戳词表（`timestamp_segment_time = 80`），且**无法靠改对齐粒度绕过**（日文走 nagisa 词切分，插空格会被重新切回去）。现在：每首歌记录零长度占比、超过 **30%** 告警；零长度单元的文本总是被并进相邻 token（产物里不再有重复时间标签，解析器告警 62 → 0）；`--refine-collapsed-words` 可把它们摊进其后的空隙（实测 63% 可细分，属**推断值**，默认关闭）。详见 [aligner.md](aligner.md)。
-  仍未解决的是根因——要让每个词都拿到真实的正时长，需要换一个分辨率更细的对齐后端。
+- **零长度单元与精度下限取决于后端**。默认的 HubertFA 帧移 **10ms**，实测日文零长度单元 **1.9%**、行区间覆盖率 88.8%；可选的 `qwen3` 后端量化在 **80ms**，零长度词 **22.5%**（逐首 10.7%～41.8%），根因是模型的时间戳词表（`timestamp_segment_time = 80`），且**无法靠改对齐粒度绕过**（日文走 nagisa 词切分，插空格会被重新切回去）。两者共用同一套后处理：每首歌记录零长度占比、超过 **30%** 告警；零长度单元的文本总是被并进相邻 token（产物里不再有重复时间标签，解析器告警 62 → 0）；`--refine-collapsed-words` 可把它们摊进其后的空隙（实测 63% 可细分，属**推断值**，默认关闭）。详见 [aligner.md](aligner.md) 与 [aligner-backends.md](aligner-backends.md) §9。
+- **歌词错一个字的代价是"从错处往后全毁"**。V4 扰动实测（[aligner-backends.md](aligner-backends.md) §9.7）：扰动点**之前**的边界漂移在日文上恒等于 0，而错处**之后**的中位漂移 329–519ms、p90 约 2.1s。HubertFA 是从左到右锚定的，没有 SOFA `match` 模式那种"只取最优连续子序列"的容错，所以 VOCALOID 的错字/重复段落会命中这个坑，而且**产物上看不出异常**（覆盖率与单调性都正常）。真遇到就手工修歌词，或用 `--target-lang` 跳过该行。
+- **分离质量比片段边界重要得多**。V4 实测：片段两端各加减 100ms，HubertFA 的行内边界中位只漂 **1ms**；但把分离人声换成原始混音，中位漂 18.5ms、p90 **398ms**（日文）。所以 [aligner-backends.md](aligner-backends.md) §4 里"逐行送片段时两端留 100–200ms padding"的建议对本项目**不需要**，要再提高质量应该优先换分离模型。
 - **全局偏移估计不可靠**：两条判据各自都会错、且错在不同的歌上，因此自动偏移极度保守（证据不足就不动）。换建模方式（对齐到人声**起音**而不是"能量高的地方"）是未做的正解。见 [offset.md](offset.md)。
 - **LRC 与音频版本不匹配**：歌词与音频属于不同剪辑时，任何全局常量偏移都不成立——实测一例需要 +21 秒偏移，而其行首分布仍能骗过对齐判据。**这类输入需要人工发现**（`--offset` 手动指定，或先看 `--dump-dir` 的产物）；现在的锚点校验会把明显不可调和的情形拦下来并告警。
 - **偏移估计的可辨识性平台**：密集行首整体落在同一个长人声区间内时，区间内存在真实无法区分的平台，结果由平局规则决定。该估计器只有「全局常量偏移」一个自由度，无法处理逐行漂移。

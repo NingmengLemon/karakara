@@ -45,3 +45,22 @@
 - `audio-separator`：`uv run --script scripts/separator_worker_audio_separator.py`，需要 `--separator-model` 指定模型文件名。它的价值是**人声质量**（MDX-Net / VR-Arch / MDX23C / RoFormer / ensemble 预设），**不是**依赖体积——它比只用 demucs 更重（多出 librosa / scipy / onnx / onnx2torch / resampy 等，而且同样无条件需要 torch；实测内联依赖下载约 240MB）。它的 `--model-dir` 必须是**扁平**目录；UVR5 GUI 的嵌套布局它不认，worker 也不会写入 `models/sep`。
 
 两个 worker 的模型目录都按**项目根目录**定位（不是 CWD），因为 worker 是被主程序以继承来的工作目录拉起的。
+
+## 代码布局
+
+CLI 只做参数解析与装配，逻辑都在包里（`src/karakara/`），因此都能被直接测试。
+
+| 位置 | 职责 |
+|---|---|
+| `main.py` | 参数表 + 单文件/批处理两种模式的编排（`build_parser` / `run_single` / `run_batch`） |
+| `karakara/core.py` | 流水线主体：预处理 → 偏移 → 逐行切段 → 对齐 → 词级产物 |
+| `karakara/backends.py` | 后端登记表（分离/对齐）、默认地址、**对齐后端的语言能力** |
+| `karakara/batch.py` | 批处理：配对发现、跑一组输入、逐项回收 |
+| `karakara/offset.py` | 全局偏移估计与两道校验 |
+| `karakara/preprocess.py` | 归一化 / 颤音抑制 / 可选压缩 |
+| `karakara/aligner/` | 对齐器契约与后端适配（`q3fa` 是那套 HTTP `/align` 契约的客户端，HubertFA 也走它） |
+| `karakara/separator/` | 分离器契约与子进程 worker 适配 |
+| `karakara/utils/` | 音频 IO、LRC 读写、语言判定、元数据过滤 |
+| `karakara/interactive.py` | 交互模式的文件对话框（tkinter） |
+| `scripts/` | 跑在**独立环境**里的 worker 与服务（PEP 723 内联依赖） |
+| `third_party/` | 上游代码的 git submodule（HubertFA；权重在 gitignored 的 `models/`） |
