@@ -49,6 +49,7 @@ from lemony_lrc_parser.offset import apply_delta
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from karakara.backends import SEPARATOR_BACKENDS
 from karakara.offset import build_energy_curve, estimate_offset
 from karakara.separator import SubprocessStemSeparator
 from karakara.utils.io import load_audio_native
@@ -60,11 +61,8 @@ WINDOW_MS = 50.0
 #: 0.1 相当于距最响处约 -20dB。
 AUDIBLE_FLOOR = 0.1
 
-#: 后端 → worker 脚本。与 main.py 的 _SEPARATOR_WORKERS 保持一致。
-_WORKERS = {
-    "demucs": "scripts/separator_worker.py",
-    "audio-separator": "scripts/separator_worker_audio_separator.py",
-}
+#: 后端 → worker 脚本。直接读主程序的登记表，避免两处各写一份而漂移。
+_WORKERS = {name: backend.script for name, backend in SEPARATOR_BACKENDS.items()}
 
 
 @dataclass(frozen=True)

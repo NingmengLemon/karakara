@@ -312,7 +312,7 @@ runtime_s_total, runtime_s_per_segment, cold_start_s
 | V1 | HubertFA ONNX：中文（pypinyin 链路最短）跑 1 行 | TextGrid 边界是否 10ms 整数倍；零长度音素比例；音素→字聚合后零长度比例 |
 | V2 | HubertFA ONNX：日文（kana→罗马字）跑同行 | 与 V1 同口径 + 罗马字预处理是否吃掉了精度（对比"人工核对过的罗马字"与"自动转换"） |
 | V3 | WhisperX align-only（ja 字级模型）跑同一批 6 首歌 | 零长度率 vs 现状 22.5%（重点看「蒲公英」41.8%）；边界栅格是否 20ms；锚定误差 |
-| V4 | §6.3-C2 扰动测试（±100ms padding / 混音 vs 分离 / 删一个字） | 行内边界漂移中位数 < 1 个帧移（10/20ms）视为稳定 → **已完成，见 §9.7**（HFA 日文 1ms、Qwen 60ms） |
+| V4 | §6.3-C2 扰动测试（±100ms padding / 混音 vs 分离 / 删一个字） | 行内边界漂移中位数 < 1 个帧移（10/20ms）视为稳定 → **已完成，见 §9.7**；工具是 `scripts/check_aligner_stability.py`（HFA 日文 1ms、Qwen 60ms） |
 | V5 | 手工标注 1 行（Vlabeler/Praat）算 BER/IOU | 与 STARS 论文的 MFA 40.3 / SOFA 20.9 同口径对照——**唯一能证明"更准"的证据** |
 
 ---
@@ -436,6 +436,21 @@ SP 300-896 | so 896-1320 | ra 1320-1767 | no 1767-1859 | o 1859-3470
 来源与坑见该目录的 `SOURCE.md`），**上游代码**是 submodule `third_party/HubertFA`。中间产物由脚本重新生成到 `tmp/`。
 
 ```powershell
+# 两个服务（V4 需要一个在跑）
+uv run --script scripts/hubertfa_aligner_server.py            # 8788
+uv run --script scripts/qwen3aligner_server.py                # 8787（对照用）
+
+# 扰动稳定性（V4）：中文样本歌；--separate 只在缺分离人声时才需要（结果会缓存）
+uv run python scripts/check_aligner_stability.py `
+  --lrc samples/countdown_to_zero_luotianyi.lrc `
+  --audio samples/countdown_to_zero_luotianyi.mp3 --separate
+
+# 换后端对照：同一份输入、同一个 --out-dir，只多一个 --tag
+uv run python scripts/check_aligner_stability.py `
+  --lrc samples/countdown_to_zero_luotianyi.lrc `
+  --audio samples/countdown_to_zero_luotianyi.mp3 `
+  --aligner-backend qwen3 --tag _qwen3
+
 # 上游代码（submodule，钉在实测过的提交上）
 git submodule update --init third_party/HubertFA
 
@@ -543,9 +558,11 @@ line 008 这类"没有压扁"的行上与 HFA 一致，作为对照/回退仍有
 **10ms** 报，这样两个后端可以直接对照（Qwen 自己的帧移是 80ms，若按它自己的口径
 判据会松 8 倍）。
 
-脚本 `tmp/v4_perturbation.py`（`tmp/` 是 gitignored 的草稿目录，按本仓库的约定，
-一次性分析脚本不进仓库——所以下面把口径写全，重写一个不难）；原始边界（每行每条件的
-全部边界与单元文本）落盘到 `tmp/v4/{zh,ja}{,_qwen3}.json`，日志同名 `.log`，判定可重算。
+脚本：**`scripts/check_aligner_stability.py`**（常驻工具，进仓库）；原始边界（每行每条件的
+全部边界与单元文本）落盘到 `<out-dir>/<音频名><tag>.json`，判定可重算。它的度量函数
+（`interior_drift` / `local_drift` / `coverage` / `drop_char` / `dup_char`）在
+`tests/test_aligner_stability.py` 里用手算得出的已知答案逐条自检过——包括"pad 要扣掉
+已知平移"与"文本扰动按单元文本的公共前缀切分"这两条最容易写错的口径。
 
 **三条口径**，先说清再看数字：
 
@@ -603,12 +620,5 @@ p90 更差）。合起来支持"默认 hfa"。
 **仍未做**：§8 的 **V5（人工标注一行算 BER/IOU）**——那是唯一能给出可与 STARS 论文
 （MFA 40.3 / SOFA 20.9）直接对照的数字的路径。
 
-复现：
-
-```powershell
-uv run --script scripts/hubertfa_aligner_server.py            # 8788
-uv run --script scripts/qwen3aligner_server.py                # 8787（对照用）
-uv run python tmp/v4_perturbation.py --song ja --separate     # 首次要跑一次分离并缓存
-uv run python tmp/v4_perturbation.py --song ja --url http://127.0.0.1:8787 --tag _qwen3
-```
+复现命令见 §9.4（`scripts/check_aligner_stability.py` 那两条）。
 

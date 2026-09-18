@@ -40,6 +40,14 @@ uv run --script scripts/separator_worker.py --info
 uv run --script scripts/separator_worker_audio_separator.py --list-models
 ```
 
+对齐后端也可以自检「扰动稳定性」（片段两端 ±100ms / 混音 vs 分离 / 删一个字；需要先起对齐服务）：
+
+```bash
+uv run python scripts/check_aligner_stability.py \
+  --lrc samples/countdown_to_zero_luotianyi.lrc \
+  --audio samples/countdown_to_zero_luotianyi.mp3 --separate
+```
+
 常用开关：
 
 | 开关 | 说明 |
