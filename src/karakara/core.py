@@ -536,8 +536,9 @@ def gen_kara(
 
     ``refine_collapsed_words`` 对应 ``--refine-collapsed-words``：把对齐器返回的
     零长度单元摊进其后的空隙（详见 :mod:`karakara.aligner.postprocess`）。默认关闭是
-    因为那是**推断值**——模型只说了"这两个边界落在同一个 80ms 帧里"。无论开关与否，
-    零长度单元的**文本**都不会丢，只会并进相邻 token。
+    因为那是**推断值**——模型只说了"这两个边界落在同一帧里"（qwen3 后端是 80ms 的
+    离散槽位，HubertFA 是 10ms 帧）。无论开关与否，零长度单元的**文本**都不会丢，
+    只会并进相邻 token。
     """
     if min_vocal_activity < 0:
         raise ValueError("min_vocal_activity must be non-negative")
@@ -656,10 +657,11 @@ def gen_kara(
 def _report_zero_length(stats: ZeroLengthStats) -> None:
     """把零长度词占比当质量信号报出来。
 
-    它是"这首歌是否已经顶到本工具的能力边界"的直接信号：对齐器的边界量化到 80ms
-    （见 :mod:`karakara.aligner.postprocess`），单元时长不足一帧就会变成零长度，
-    在播放器里无法单独高亮。实测逐首 10.7% / 15.3% / 24.6% 属正常范围，
-    41.8% 那首则明显是模型吃力。
+    零长度单元在播放器里无法单独高亮，而它有多少取决于**后端的帧移**：默认的
+    HubertFA 是 10ms，实测日文只有 1.9%；可选的 qwen3 量化在 80ms，实测逐首
+    10.7% / 15.3% / 24.6% 属正常范围，41.8% 那首则明显是模型吃力。所以这是一个
+    「这首歌有没有顶到当前后端的能力边界」的信号，而不是跨后端可比的绝对刻度。
+    根因与实测数据见 :mod:`karakara.aligner.postprocess`。
     """
     if not stats.units:
         return
