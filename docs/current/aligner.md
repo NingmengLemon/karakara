@@ -1,0 +1,98 @@
+# 对齐
+
+对齐器负责把「一段音频 + 这行的文本」变成「逐单元的时间」。这一页讲现在的契约、两个后端
+的差别、语言怎么定，以及零长度单元怎么处理。**为什么是这两个后端**的来历见
+[records/2026-09-18-aligner-choice-and-stability.md](../records/2026-09-18-aligner-choice-and-stability.md)。
+
+## 两个后端，一套契约
+
+主程序**只认地址、不认后端**：换后端 = 换端口。两边都实现同一套 `/align` 契约。
+
+| 后端 | 服务脚本 | 默认地址 | 说明 |
+|---|---|---|---|
+| **`hfa`（默认）** | `scripts/hubertfa_aligner_server.py` | `127.0.0.1:8788` | HubertFA，**为歌声训练**，ONNX，帧移 **10ms**；单元有真实时长，并显式标出呼吸音与静音 |
+| `qwen3` | `scripts/qwen3aligner_server.py` | `127.0.0.1:8787` | Qwen3-ForcedAligner，多语言通用，边界量化在 **80ms**，零长度单元多 |
+
+```bash
+# 起服务（默认后端；--preload 会在启动时就把模型加载好）
+uv run --script scripts/hubertfa_aligner_server.py --preload
+# 可选后端
+uv run --script scripts/qwen3aligner_server.py
+
+# 主程序：地址按后端缺省，也可以直接指地址
+uv run main.py -l song.lrc -a song.flac
+uv run main.py -l song.lrc -a song.flac --aligner-backend qwen3
+uv run main.py -l song.lrc -a song.flac --aligner-url http://other-host:9000
+```
+
+两个后端的**能力差异会写进登记表**：`--aligner-language` 的选项是两个后端语言集合的并集
+（`yue`/`ko` 只有 qwen3 支持），选了不支持的语言会在**开跑前**报错并给出可用的后端，
+而不是等人声分离跑完才从服务端拿到 400。
+
+HubertFA 需要额外的模型与词典（在 `models/aligner/HubertFA/`，不进仓库）与上游代码
+（submodule `third_party/HubertFA`，首次使用需 `git submodule update --init`）。
+两者缺失时服务返回**带补救命令的 503**，不是裸 ImportError。
+
+## 响应形状是契约的一部分
+
+客户端读 `response["words"]`：
+
+- **单个文件 → 对象** `{"words": [{"text", "start_time", "end_time"}]}`
+- 多个文件 → 数组 `[{"words": [...]}, ...]`
+
+判断「单文件还是多文件」必须按**实际收到的文件数**，不能按形参的运行时类型：FastAPI 对
+`list[UploadFile] | UploadFile` 这种联合类型，对单个上传也会走 list 分支。踩错这个坑的后果
+不是报错，而是**逐行降级把异常吞掉、最后写出一个没有词级时间戳却退出码为 0 的文件**。
+
+现在有三道防线：`is_batch` 按实际文件数判定；客户端同时容忍「长度为 1 的数组」，其他形状抛
+`Q3FAProtocolError`；`gen_kara` 在**整首歌全部对齐失败**时直接报错并拒绝写盘。两侧各有一条
+回归测试（`tests/test_aligner_contract.py`）。
+
+## 语言怎么定
+
+`--aligner-language auto`（默认）按**整首歌**判定，而不是逐行：
+
+1. 出现任意假名（平假名/片假名）⇒ 日语；
+2. 否则出现 CJK 汉字 ⇒ 中文；
+3. 否则出现拉丁字母 ⇒ 英语；
+4. 都没有 ⇒ 交给后端默认。
+
+第一条是关键：纯汉字行（如「畜生」「苛立つ　臓器の末端」）在逐行判据下会被判成中文，按行
+计票时随时可能把整首日文歌翻盘。代价是「以中英文为主、只夹了几个假名」的歌会被判成日语，
+这类情况可以用 `--aligner-language` 显式覆盖。
+
+`--target-lang` 是另一回事：它**跳过**语言不符的行（例如夹在日文歌词里的中文翻译行），
+这些行原样保留。它用的是逐行判据，所以对纯汉字行不可靠。
+
+## 零长度单元怎么处理
+
+零长度单元指 `start == end` 的单元：它的真实时长短于后端的一个帧，在播放器里**无法被单独
+高亮**。两个后端的发生率差很多（`hfa` 日文实测 1.9%，`qwen3` 22.5%、最高一首 41.8%），
+处理方式共用同一套三层：
+
+**① 统计并告警（总是生效）。** 每首歌跑完记录一行
+`aligner returned N unit(s), M zero-length (x%)`，超过 **30%** 升级为告警。这个比例应当被
+当作「这首歌是否顶到了当前后端的能力边界」，**不是**跨后端可比的绝对刻度。
+
+**② 合并（总是生效）。** 序列化按 `[start]文本[end]` 写标签，零长度单元会写出与前一个
+**完全相同**的标签；解析器把这种重复标签当异常丢掉（自带 `Unordered time tag dropped`）。
+`core._merge_zero_length_tokens` 把这件事显式化：文本一个字符不变，产物变规范、告警消失。
+合并后的产物里不会有连续重复的时间标签，`tests/test_zero_length.py` 直接断言这一点。
+
+**③ 细分（`--refine-collapsed-words`，默认关闭）。** 把折叠单元摊进**它后面**的空隙。
+三条不变量：不改动任何被模型报告过的边界；不越过下一个正常单元的起点；单个折叠单元的时长不
+超过本行正常跨度的中位数。分配按文本长度加权。默认关闭的原因是这是**推断值**：模型只说了
+「这两个边界落在同一帧里」，我们不知道该往哪边分。
+
+实现：`aligner/postprocess.py`（统计与细分）+ `core._merge_zero_length_tokens`（合并）。
+实测数字与根因见 [records/2026-09-12-qwen3-80ms-zero-length.md](../records/2026-09-12-qwen3-80ms-zero-length.md)。
+
+## 精度与代价
+
+- 默认后端的帧移是 **10ms**，日文实测行区间覆盖率 88.8%、零长度单元 1.9%。
+- 已知代价：日文路径会**丢掉促音**（上游 G2P 的 bug，见归档调研文档），汉字读音靠
+  `pykakasi` 猜（用假名歌词可以完全绕开）；片段边界 ±100ms 对它的结果基本无影响，
+  所以生产路径的紧切片段不需要加 padding。
+- 真正影响质量的是**分离质量**，不是切段：换成原始混音后边界漂移远大于一个帧。
+- 还没做人工标注（BER/IOU），所以「它比另一个后端更准」这句话的证据强度只到
+  「结构性冲突的样本上它对、另一个错」。

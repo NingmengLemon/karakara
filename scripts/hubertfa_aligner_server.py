@@ -22,8 +22,8 @@
 """HubertFA 对齐服务：与 `qwen3aligner_server.py` **同一套 `/align` 契约**。
 
 HubertFA 是**为歌声训练**的强制对齐器（SOFA 血统，ONNX，10ms 帧）。实机验证见
-`docs/aligner-backends.md` §9：在 Qwen3-ForcedAligner 把歌词压扁的行上，它是对的
-（逐行覆盖率 84–94% vs Qwen 的 6.7%–93.3%；零长度单元 1.9% vs 41.8%）。
+`docs/records/2026-09-18-aligner-choice-and-stability.md`：在 Qwen3-ForcedAligner 把歌词
+压扁的行上，它是对的（逐行覆盖率 84–94% vs Qwen 的 6.7%–93.3%；零长度单元 1.9% vs 41.8%）。
 
 为什么需要这一层而不是直接调 CLI：HubertFA 是**文件级**的（每个 wav 配一个 `.lab`
 音素序列），而本项目的契约是「音频片段 + 行文本 → 该行的逐单元时间」。所以本服务负责

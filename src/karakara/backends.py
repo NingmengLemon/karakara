@@ -65,7 +65,8 @@ SEPARATOR_BACKENDS: dict[str, SeparatorBackend] = {
 #: 所以主程序只认地址、不认后端：换后端 = 换个端口，代码路径完全一致。
 #:
 #: * ``hfa``  —— HubertFA（歌声专用，10ms 帧，逐字/逐词都有真实时长）。实测在
-#:   Qwen 把歌词压扁的行上是对的，见 docs/aligner-backends.md §9。语言来自它自带的
+#:   Qwen 把歌词压扁的行上是对的，见 docs/records/2026-09-18-aligner-choice-and-stability.md。
+#:   语言来自它自带的
 #:   三份词典（`ds-zh-pinyin-lite` / `japanese_dict_full` / `ds_cmudict-07b`）。
 #: * ``qwen3``—— Qwen3-ForcedAligner（多语言通用，边界量化在 80ms，零长度词多）。
 ALIGNER_BACKENDS: dict[str, AlignerBackend] = {

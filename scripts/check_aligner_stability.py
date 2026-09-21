@@ -1,4 +1,7 @@
-"""对齐后端的扰动稳定性检查（`docs/aligner-backends.md` §6.3-C2 与 §8 的 V4）。
+"""对齐后端的扰动稳定性检查（V4）。
+
+实测结论见 `docs/records/2026-09-18-aligner-choice-and-stability.md`；
+判据设计与候选评估方法见 `docs/archive/aligner-backends-research.md`。
 
 用法::
 
@@ -490,7 +493,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="对齐后端的扰动稳定性检查（±pad / 混音 vs 分离 / 删字）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="指标口径与实测结论见 docs/aligner-backends.md §6.3 与 §9.7。",
+        epilog=(
+            "指标口径与实测结论见 docs/records/2026-09-18-aligner-choice-and-stability.md。"
+        ),
     )
     parser.add_argument("--lrc", type=Path, required=True, help="行级 LRC")
     parser.add_argument("--audio", type=Path, required=True, help="原始音频（混音）")

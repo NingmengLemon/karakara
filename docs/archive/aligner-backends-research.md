@@ -1,5 +1,15 @@
 # 强制对齐（forced alignment）候选后端调研
 
+> **这是历史归档，不是现状。** 调研发生在 2026-09-12，当时仓库只有 Qwen3-ForcedAligner
+> 一个后端，结论是「80ms 是离散时间槽设计的固有量化，换架构才是唯一出路」。**该结论已经
+> 落地**：HubertFA 现在是默认后端（`--aligner-backend {hfa,qwen3}`）。实现与现状见
+> [../current/aligner.md](../current/aligner.md)，实测结论见
+> [../records/2026-09-18-aligner-choice-and-stability.md](../records/2026-09-18-aligner-choice-and-stability.md)。
+>
+> 本文保留的价值是候选清单、验证方法与判据设计（§6 的 C1–C3、§8 的 V1–V5），也就是一份
+> 「怎么评估一个新对齐后端」的可复用方法。下文 §9 之前的部分成文时 HubertFA 尚未集成，
+> 文中「当前仍然只用 Qwen3」这类表述只在那时成立。
+
 > **这是一份调研记录，不是实现决策**：仓库当前仍然只用 `Qwen3-ForcedAligner-0.6B`，下面没有任何候选被集成。留在这里是因为它回答了一个具体问题——**80ms 精度与零长度词是不是选型问题**。结论是「是架构问题，不是配置疏漏」（见 §0 第 1 条），因此换后端才是唯一的出路，这份调研列出了候选与验证方法。
 >
 > 调研过程未改动项目任何文件；临时产物只写在 `E:\Projects\Python\karakara\tmp\aligner_research_*`；`D:\MUSIC` 未访问。
@@ -42,7 +52,7 @@
 | 许可 | Apache-2.0（`Qwen/Qwen3-ForcedAligner-0.6B-hf` 模型卡） | 【我实测】HF API |
 | 是否可调细 | **否**：时间戳是离散 token 索引（slot-filling），80ms = 400s/5000，改不了 | 【论文 arXiv:2601.18220 + 我实测 config】 |
 
-> 结论：**这条线上的努力到此为止**。80ms 与「零长度词」是同源问题（真实时长 <1 个槽位的单元必然塌成 0 长度），`docs/aligner.md` 的判断是准确的。
+> 结论：**这条线上的努力到此为止**。80ms 与「零长度词」是同源问题（真实时长 <1 个槽位的单元必然塌成 0 长度），`docs/current/aligner.md` 的判断是准确的。
 
 ---
 
@@ -105,7 +115,7 @@
 - **语言**：取决于你挂哪个 CTC 模型。可选：`jonatasgrosman/wav2vec2-large-xlsr-53-japanese`（**字级**，Apache-2.0）、`-chinese-zh-cn`（字级）、MMS-300M（1130 语言，但模型许可 CC-BY-NC-4.0，且非拉丁文字要先罗马化）。
 - **分辨率**：wav2vec2 / HuBERT / MMS 的 `inputs_to_logits_ratio = 320` → **20ms/帧**（`ctc-forced-aligner` 源码里显式断言 `window % ratio == 0`，`ratio = 320`）【我实测源码】。torchaudio 官方多语言教程**明确说明**：中文不需要分词即可做**字级**对齐，要词级才需要先分词。
 - **唱歌适配**：无。这就是"自己拿一个模型跑 CTC Viterbi"，唱歌表现完全取决于模型选择。
-- **依赖 / Windows**：torch + torchaudio。**本项目已有在 win32 + CUDA 13 上跑通 torch 2.14.0+cu130 的实证**（`docs/environments.md`），无 flash-attn / deep_grad 之类 Linux-only 依赖。
+- **依赖 / Windows**：torch + torchaudio。**本项目已有在 win32 + CUDA 13 上跑通 torch 2.14.0+cu130 的实证**（`docs/current/environments.md`），无 flash-attn / deep_grad 之类 Linux-only 依赖。
 - **集成方式**：进程内函数，天然适配「短片段 + 文本」。你要自己补：文本→模型词表 id（`<star>`/blank 处理）、`torchaudio.functional.forced_align` 调用、frame→time、span 合并、词/字聚合。
 - **证据强度**：官方教程（分辨率/字级行为）。
 - **落地成本**：中（代码量比 ① 多一些，但**没有新框架、没有第三方包风险、许可最干净**）。本质上是**避开 ctc-forced-aligner 的 Windows 构建问题，自己实现它的核心**。
@@ -236,13 +246,13 @@
 
 ### 6.1 评估对齐器时最容易顺手用的三条指标，哪条其实没判别力
 
-> 这一节针对的是「评估**新后端**时该量什么」。项目**当前**并没有把这三条做成自动指标——现在只统计零长度占比（见 `docs/aligner.md`），所以下面是对"要不要加、加什么"的建议。
+> 这一节针对的是「评估**新后端**时该量什么」。项目**当前**并没有把这三条做成自动指标——现在只统计零长度占比（见 `docs/current/aligner.md`），所以下面是对"要不要加、加什么"的建议。
 
 | 顺手的指标 | 问题 | 建议 |
 |---|---|---|
 | **与行首时间戳的一致性** | 本项目是**逐行送片段**，片段内时间原点就是行首 → 这个指标几乎**恒等于 0**，对区分后端毫无判别力（它其实在检验"行切分"而不是"对齐器"） | 改成 **片段首/末单元锚定误差**：`first_unit.start - 0`、`segment_duration - last_unit.end`（单位 ms），这才反映"对齐器认不认得片段边界" |
 | **零长度词比例** | 不同后端的零长度**定义不同**：有的返回 `NaN`/未放置，有的把 0 长度 span 显式吐出（ctc-forced-aligner 源码里 `get_spans` 就会有 `(i, i)`），有的自动合并 | 统一定义为 **`duration_ms < EPS` 的单元占比**（EPS 取 10ms），并把"未放置/NaN"单列一栏，不要混进零长度 |
-| **时间分辨率** | 只看"栅格"会漏掉两种情形：① 20ms 栅格的后端也可能输出非整倍数（浮点插值）② 80ms 栅格经过 `fix_timestamp` 插值后看着像 20ms（`docs/aligner.md` 的 SACRA 那行就是例子） | 同时记 **(a) 边界值分布的 gcd/众数间隔**、**(b) 相邻边界的最小非零间隔**、**(c) 有多少边界是"非栅格值"（插值痕迹）** |
+| **时间分辨率** | 只看"栅格"会漏掉两种情形：① 20ms 栅格的后端也可能输出非整倍数（浮点插值）② 80ms 栅格经过 `fix_timestamp` 插值后看着像 20ms（`docs/current/aligner.md` 的 SACRA 那行就是例子） | 同时记 **(a) 边界值分布的 gcd/众数间隔**、**(b) 相邻边界的最小非零间隔**、**(c) 有多少边界是"非栅格值"（插值痕迹）** |
 
 ### 6.2 建议的对比口径（一个后端 = 一份 JSON，字段固定）
 
@@ -262,7 +272,7 @@ runtime_s_total, runtime_s_per_segment, cold_start_s
 1. **同一批输入**：同歌、同分离人声产物、同行切分、同行文本；
 2. **同一后处理**：只允许"单调性修复 + 零长度合并"，**禁止插值细分**（插值会伪造分辨率，`fix_timestamp` 就是先例）；
 3. **同一统计粒度**：一律换算到**字/mora 级**再比（各后端原生粒度不同：音素/字/词）；
-4. **同一计时口径**：每首歌单独计总时长，首曲冷启动单列（`docs/benchmarks.md` 已经踩过这个坑）。
+4. **同一计时口径**：每首歌单独计总时长，首曲冷启动单列（`docs/records/2026-09-12-separator-ab.md` 已经踩过这个坑）。
 
 ### 6.3 没有 ground truth 时，用三个代理指标
 
@@ -605,7 +615,7 @@ line 008 这类"没有压扁"的行上与 HFA 一致，作为对照/回退仍有
    **恒等于 0**（n=51/55，最大 0ms），中文最大也只有 48ms；而错处**之后**的中位漂移
    329–519ms、p90 约 2.1s（日文）。→ HFA 是从左到右锚定的，一个错字会把后半行整体带偏，
    而它没有 SOFA 的 `match` 模式那种"只取最优连续子序列"的容错。这对 VOCALOID 的错字与
-   重复段落是个真实的坑，记进 [known-issues.md](known-issues.md)。
+   重复段落是个真实的坑，记进 [current/limits.md](../current/limits.md)。
 4. **"锚定误差"这个指标对 HFA 不适用。** 它的输出是**对整段的连续划分**，首条单元边界在
    结构上就等于片段起点，于是 `pad±` 的锚定误差恒等于我加的 100ms（实测中位 100.0）。
    §6.1 建议这个指标时设想的是"自由放置单元"的对齐器。
