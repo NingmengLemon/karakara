@@ -15,6 +15,8 @@ import pytest
 from karakara import backends
 from karakara.backends import ALIGNER_BACKENDS, SEPARATOR_BACKENDS
 
+_ROOT = Path(__file__).resolve().parent.parent
+
 
 def _write_pair(directory: Path, stem: str, suffix: str = ".flac") -> None:
     (directory / f"{stem}.lrc").write_text("[00:00.00]test", encoding="utf-8")
@@ -176,7 +178,12 @@ def test_build_separator_uses_uv_script_for_demucs(main_module: Any) -> None:
     separator = main_module.build_separator(_separator_args())
 
     assert separator.command[:3] == ["uv", "run", "--script"]
-    assert separator.command[3].endswith(SEPARATOR_BACKENDS["demucs"].script)
+    # 用 Path 比较而不是字符串后缀：解析出来的是 Windows 绝对路径（反斜杠），
+    # 「以后缀判断」会被路径分隔符坑掉。
+    assert (
+        Path(separator.command[3]).resolve()
+        == (_ROOT / SEPARATOR_BACKENDS["demucs"].script).resolve()
+    )
 
 
 def test_build_separator_selects_audio_separator_backend(main_module: Any) -> None:
@@ -187,7 +194,10 @@ def test_build_separator_selects_audio_separator_backend(main_module: Any) -> No
         )
     )
 
-    assert separator.command[3].endswith(SEPARATOR_BACKENDS["audio-separator"].script)
+    assert (
+        Path(separator.command[3]).resolve()
+        == (_ROOT / SEPARATOR_BACKENDS["audio-separator"].script).resolve()
+    )
 
 
 def test_explicit_separator_cmd_wins_over_backend(main_module: Any) -> None:

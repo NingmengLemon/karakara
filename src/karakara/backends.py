@@ -20,6 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from .paths import repo_file
 from .separator import SubprocessStemSeparator
 
 
@@ -160,9 +161,13 @@ def build_separator(
 
     ``command`` 优先（便于接自有环境或远程 worker）；否则按 ``backend`` 选脚本，用
     ``uv run --script`` 拉起（worker 脚本头部自带 PEP 723 内联依赖）。
+
+    脚本路径取**绝对路径**（:func:`karakara.paths.repo_file`）：相对路径由 uv 按当前
+    工作目录解析，实测从仓库外运行时它会去找 ``E:\\scripts\\separator_worker.py``。
     """
     if command is None:
-        command = ["uv", "run", "--script", SEPARATOR_BACKENDS[backend].script]
+        script = repo_file(SEPARATOR_BACKENDS[backend].script)
+        command = ["uv", "run", "--script", str(script)]
     return SubprocessStemSeparator(
         command=command,
         model=model,

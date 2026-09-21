@@ -205,12 +205,30 @@ def test_resolve_timeout(value: float | None, expected: float | None) -> None:
 
 def test_build_separator_registry_command_uses_the_backend_script() -> None:
     separator = backends.build_separator("audio-separator")
-    assert separator.command == [
-        "uv",
-        "run",
-        "--script",
-        SEPARATOR_BACKENDS["audio-separator"].script,
-    ]
+    script = separator.command[-1]
+    assert separator.command[:3] == ["uv", "run", "--script"]
+    assert Path(script).is_absolute(), "worker 脚本路径必须是绝对路径（见下一个用例）"
+    assert (
+        Path(script).resolve()
+        == (_ROOT / SEPARATOR_BACKENDS["audio-separator"].script).resolve()
+    )
+
+
+def test_build_separator_command_survives_another_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """回归：从仓库外运行时，默认 worker 命令里的脚本路径仍然有效。
+
+    现象：相对路径 ``scripts/separator_worker.py`` 由 uv 按**当前工作目录**解析，
+    在别处运行时它去找 ``E:\\scripts\\separator_worker.py``，以 returncode=2 退出，
+    主程序只报「分离 worker 提前退出」。实测复现在 `backends.py` 的修复前版本上。
+    """
+    monkeypatch.chdir(tmp_path)
+    separator = backends.build_separator("demucs")
+
+    script = Path(separator.command[-1])
+    assert script.is_absolute()
+    assert script.is_file(), f"工作目录换到 {tmp_path} 后脚本路径就失效了: {script}"
 
 
 def test_build_separator_explicit_command_wins() -> None:

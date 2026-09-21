@@ -220,6 +220,26 @@ def test_worker_failing_with_nonzero_code_reports_that_code(
         separator.close()
 
 
+def test_early_exit_error_points_at_the_command(tmp_path: Path, audio: Path) -> None:
+    """回归：worker 提前退出时要报出**启动命令与工作目录**。
+
+    现象：默认命令里的脚本路径曾经是相对路径，uv 按当前工作目录解析后失败，
+    主程序只报一句「分离 worker 提前退出（returncode=2）」，看不出是路径问题还是
+    环境没装好。真实报错在 worker 继承的 stderr 上，而人往往只读异常消息。
+    """
+    script = write_fake_worker(tmp_path, "")
+    separator = SubprocessStemSeparator(worker_command(script))
+    try:
+        with pytest.raises(StemSeparationError) as excinfo:
+            separator.separate(audio, tmp_path / "out")
+    finally:
+        separator.close()
+
+    message = str(excinfo.value)
+    assert str(script) in message, "错误信息里应能看到启动命令"
+    assert "当前工作目录" in message, "错误信息里应能看到工作目录"
+
+
 def test_claimed_but_missing_stem_file_is_an_error(tmp_path: Path, audio: Path) -> None:
     """worker 谎报写出了文件时不能当成成功。"""
     script = write_fake_worker(

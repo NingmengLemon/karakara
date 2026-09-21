@@ -12,6 +12,7 @@ from pathlib import Path
 from queue import Empty, Queue
 from typing import Any
 
+from karakara.paths import repo_file
 from karakara.separator.abc import AbstractStemSeparator, StemSeparationError
 
 logger = getLogger(__name__)
@@ -31,7 +32,8 @@ _STARTUP_GRACE_S = 0.5
 #: 取值要留足首次运行的时间——第一次会由 uv 准备 worker 环境并加载模型。
 DEFAULT_REQUEST_TIMEOUT_S = 900.0
 
-#: 给 uv 管理的 worker 使用的默认命令。
+#: 给 uv 管理的 worker 使用的默认命令（路径相对**仓库根**，经
+#: :func:`karakara.paths.repo_file` 解析成绝对路径）。
 DEFAULT_WORKER_SCRIPT = Path("scripts/separator_worker.py")
 
 
@@ -40,8 +42,12 @@ def _default_command() -> list[str]:
 
     ``uv run --script`` 会按脚本头部的 PEP 723 内联依赖准备一个缓存环境，
     因此主环境的依赖里不需要出现 torch / demucs。
+
+    脚本路径走 :func:`karakara.paths.repo_file` 取绝对路径：相对路径会被 uv 按
+    **当前工作目录**解析，从仓库外运行时会去找 ``E:\\scripts\\separator_worker.py``
+    并以 ``returncode=2`` 退出。
     """
-    return ["uv", "run", "--script", str(DEFAULT_WORKER_SCRIPT)]
+    return ["uv", "run", "--script", str(repo_file(DEFAULT_WORKER_SCRIPT))]
 
 
 class _WorkerProtocolError(StemSeparationError):
@@ -290,7 +296,11 @@ class SubprocessStemSeparator(AbstractStemSeparator):
                 # poll() 往往还返回 None，报错信息会变成没用的 "returncode=None"。
                 code = self._reap()
                 raise StemSeparationError(
-                    f"分离 worker 提前退出（returncode={code}），未返回结果"
+                    f"分离 worker 提前退出（returncode={code}），未返回结果。"
+                    f"启动命令: {' '.join(self._command)}；"
+                    f"当前工作目录: {Path.cwd()}。"
+                    f"worker 自己的报错就在上面它继承的 stderr 里"
+                    f"（脚本路径不存在、依赖没装好、显存不足都会走到这里）"
                 )
             line = line.strip()
             if not line:
