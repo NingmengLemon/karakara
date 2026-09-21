@@ -130,7 +130,10 @@ class HttpAligner(AbstractAligner):
         )
 
         buffer = BytesIO()
-        save_audio(buffer, audio, sample_rate)
+        # 送 float32 WAV：分离链路刻意全程 32 位浮点（见 docs/architecture.md），
+        # 在这里退回 16 位等于在下游预处理之前又引入一次量化。已实测两种载荷
+        # 在 HubertFA 上的逐单元边界完全一致（见该 commit 的 A/B 记录）。
+        save_audio(buffer, audio, sample_rate, subtype="float32")
         response = self._client.align_bytes(
             buffer.getvalue(), text=text, language=service_language
         )
