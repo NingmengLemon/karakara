@@ -241,3 +241,90 @@ def test_audio_separator_stem_classification(
 ) -> None:
     """输出文件名的归类不能依赖某个固定命名模板（各版本模板不同）。"""
     assert audio_worker.classify_stem(filename) == expected
+
+
+# --------------------------------------------------------------------------
+# 解码容错
+# --------------------------------------------------------------------------
+
+_MP3_RATE = 44100
+
+
+def _write_mp3(path: Path, *, seconds: float = 1.5) -> Path:
+    """写一个确定性的合成 mp3（固定随机种子，内容可复现）。"""
+    import av
+    import numpy as np
+
+    rng = np.random.default_rng(0)
+    samples = (rng.standard_normal((2, int(_MP3_RATE * seconds))) * 0.2).astype(
+        np.float32
+    )
+    with av.open(str(path), "w", format="mp3") as container:
+        stream = container.add_stream("libmp3lame", rate=_MP3_RATE)
+        # add_stream 的返回类型是 Video/Audio/SubtitleStream 的联合；按模板名收窄，
+        # 免得 mypy 与 ty 都对着 .layout/.encode 报 union-attr。
+        assert isinstance(stream, av.AudioStream)
+        stream.layout = "stereo"
+        frame = av.AudioFrame.from_ndarray(samples, format="fltp", layout="stereo")
+        frame.sample_rate = _MP3_RATE
+        for packet in stream.encode(frame):
+            container.mux(packet)
+        for packet in stream.encode(None):
+            container.mux(packet)
+    return path
+
+
+@pytest.fixture(scope="module")
+def corrupt_mp3(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """一个中段被覆写成垃圾的 mp3，用来模拟真实曲库里的损坏文件。
+
+    损坏方式**是实测选的**：单纯截断尾部不会让 PyAV 报错（只是少解出几帧），
+    只有在中段写入非法字节才会稳定产生 ``av.InvalidDataError``
+    （实测 ok=58 bad=2）。因此下面的「跳过」断言若因 fixture 失效而失败，
+    说明损坏方式不再能造出坏包，而不是产品行为回归。
+    """
+    av = pytest.importorskip("av", reason="解码容错测试需要 PyAV")
+    assert "libmp3lame" in av.codecs_available
+
+    path = _write_mp3(tmp_path_factory.mktemp("decode") / "source.mp3")
+    data = bytearray(path.read_bytes())
+    middle = len(data) // 2
+    data[middle : middle + 400] = b"\xff" * 400
+    corrupt = path.with_name("corrupt.mp3")
+    corrupt.write_bytes(bytes(data))
+    return corrupt
+
+
+def test_corrupt_packets_are_skipped_not_fatal(
+    worker: Any, corrupt_mp3: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """回归：零星坏包只能让那一小段音频缺失，不能让整首歌分离失败。
+
+    实测来源：`D:\\MUSIC` 某首 mp3 有 5 个坏包 / 9569 个好包，旧实现直接抛
+    ``InvalidDataError`` 导致整首歌失败，而主进程侧的 ``io._decode`` 却能正常解码
+    （``skip_invalid`` 默认开），两侧行为不一致。
+    """
+    with caplog.at_level("WARNING", logger="karakara.separator_worker"):
+        audio = worker.decode_audio(corrupt_mp3, _MP3_RATE)
+
+    assert audio.ndim == 2
+    assert audio.shape[0] == 2
+    assert audio.shape[1] > 0
+    assert "跳过" in caplog.text, "坏包被静默吞掉了，应当留下可追溯的告警"
+
+
+def test_undecodable_file_still_fails_loudly(worker: Any, tmp_path: Path) -> None:
+    """不可用的文件仍要报错：容错不能变成「静默产出空音频」。
+
+    实测（``tmp/probe_allbad_mp3.py``）：纯垃圾字节、以及「合法头部 + 其余全覆写」
+    这几种构造都在 ``av.open`` 阶段就抛 ``InvalidDataError``，走不到 decode_audio
+    末尾那条「所有包都无法解码」的兜底分支。所以这里断言的是用户真正在意的那条
+    性质：**失败必须响亮**，而不是返回空数组。
+    """
+    path = tmp_path / "garbage.mp3"
+    path.write_bytes(b"\xff" * 8192)
+
+    with pytest.raises(Exception) as excinfo:
+        worker.decode_audio(path, _MP3_RATE)
+
+    assert not isinstance(excinfo.value, AssertionError)

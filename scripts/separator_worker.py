@@ -99,23 +99,45 @@ _separator_cache: dict[tuple[str, str, str], Any] = {}
 
 
 def decode_audio(path: Path, sample_rate: int) -> Any:
-    """解码为 (channels, samples) 的 float32 数组，并重采样到 sample_rate。"""
+    """解码为 (channels, samples) 的 float32 数组，并重采样到 sample_rate。
+
+    单个损坏的 packet 只跳过并告警，不让整首歌失败。真实曲库里确实存在这种文件
+    （实测 `D:\\MUSIC` 某首 mp3 有 5 个坏包 / 9569 个好包，位置在文件尾部），为它们
+    整体报错等于把一首本来能对齐的歌白白丢掉。主进程侧的
+    ``karakara.utils.io._decode`` 早就是这个行为（``skip_invalid`` 默认开），
+    这里与它对齐。
+
+    **全部**包都解不出来仍然报错：那是文件本身不可用，不是零星损坏。
+    """
     import av
     import numpy as np
 
     resampler = av.AudioResampler("fltp", rate=sample_rate)
     frames: list[Any] = []
+    skipped = 0
     with av.open(str(path), "r") as container:
         stream = container.streams.audio[0]
         for packet in container.demux(stream):
-            for frame in packet.decode():
+            try:
+                decoded = packet.decode()
+            except av.InvalidDataError as exc:
+                skipped += 1
+                if skipped == 1:
+                    LOGGER.warning(f"跳过损坏的音频包 @ {packet.pts}: {exc}")
+                continue
+            for frame in decoded:
                 for resampled in resampler.resample(frame):
                     frames.append(resampled.to_ndarray())
         for resampled in resampler.resample(None):
             frames.append(resampled.to_ndarray())
 
+    if skipped:
+        LOGGER.warning(f"{path.name}: 共跳过 {skipped} 个损坏的音频包")
     if not frames:
-        raise ValueError(f"未能从 {path} 解码出任何音频帧")
+        raise ValueError(
+            f"未能从 {path} 解码出任何音频帧"
+            + (f"（{skipped} 个包全部无法解码）" if skipped else "")
+        )
     return np.concatenate(frames, axis=1).astype(np.float32)
 
 
