@@ -168,6 +168,86 @@ def test_run_batch_reports_failures_without_stopping(
     assert len(attempted) == 2
 
 
+def test_run_batch_closes_workers_even_when_every_job_fails(
+    main_module: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """回归：`finally` 里的 close 必须执行。
+
+    两个 worker 都是常驻资源（Demucs 模型常驻在分离 worker 进程里，HTTP 连接池在
+    对齐客户端里），整批失败时若漏掉 close，进程退出前会一直占着显存与连接。
+    """
+    _write_pair(tmp_path, "one")
+    _write_pair(tmp_path, "two")
+    closed: list[str] = []
+
+    class FakeAligner:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def close(self) -> None:
+            closed.append("aligner")
+
+    class FakeSeparator:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def close(self) -> None:
+            closed.append("separator")
+
+    def fake_process(_job: object, **_kwargs: object) -> None:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(main_module, "HttpAligner", FakeAligner)
+    monkeypatch.setattr(backends, "SubprocessStemSeparator", FakeSeparator)
+    monkeypatch.setattr(main_module.MetadataFilter, "from_file", lambda _path: object())
+    monkeypatch.setattr(main_module, "process_job", fake_process)
+
+    assert main_module.run_batch(_batch_args(tmp_path)) == 1
+    assert closed == ["aligner", "separator"]
+
+
+def test_run_batch_fail_fast_stops_but_still_closes_workers(
+    main_module: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`--fail-fast`：第一个失败就停，后续任务不再尝试。
+
+    异常照常抛出去（调用方拿到的仍是非 0 退出），但 `finally` 里的 close 不能省。
+    """
+    for name in ("one", "two", "three"):
+        _write_pair(tmp_path, name)
+    attempted: list[str] = []
+    closed: list[str] = []
+
+    class FakeAligner:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def close(self) -> None:
+            closed.append("aligner")
+
+    class FakeSeparator:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def close(self) -> None:
+            closed.append("separator")
+
+    def fake_process(job: object, **_kwargs: object) -> None:
+        attempted.append(str(job))
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(main_module, "HttpAligner", FakeAligner)
+    monkeypatch.setattr(backends, "SubprocessStemSeparator", FakeSeparator)
+    monkeypatch.setattr(main_module.MetadataFilter, "from_file", lambda _path: object())
+    monkeypatch.setattr(main_module, "process_job", fake_process)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        main_module.run_batch(_batch_args(tmp_path, fail_fast=True))
+
+    assert len(attempted) == 1, "fail-fast 之后不应再尝试第二个任务"
+    assert closed == ["aligner", "separator"]
+
+
 # --------------------------------------------------------------------------
 # build_separator / build_aligner
 # --------------------------------------------------------------------------

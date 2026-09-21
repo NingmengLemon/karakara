@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import sys
 import textwrap
+import time
 from pathlib import Path
 
 import numpy as np
@@ -238,6 +239,74 @@ def test_early_exit_error_points_at_the_command(tmp_path: Path, audio: Path) -> 
     message = str(excinfo.value)
     assert str(script) in message, "错误信息里应能看到启动命令"
     assert "当前工作目录" in message, "错误信息里应能看到工作目录"
+
+
+def test_request_timeout_is_a_readable_error(tmp_path: Path, audio: Path) -> None:
+    """回归：worker 卡住时必须按超时放弃，而不是让主程序永久挂住。
+
+    worker 的 stdout 由独立线程读（``_WorkerReader``），因此「一条响应都没来」这件事
+    有确定的上限；这条链路此前完全没有测试覆盖。假 worker 读完请求就不吭声，
+    但在 stdin 关闭（EOF）时会自己退出，所以 close() 不需要等满强制终止的 10 秒。
+    """
+    script = write_fake_worker(tmp_path, "for raw in sys.stdin:\n    pass\n")
+    separator = SubprocessStemSeparator(worker_command(script), request_timeout=0.3)
+    try:
+        start = time.monotonic()
+        with pytest.raises(StemSeparationError, match="超时"):
+            separator.separate(audio, tmp_path / "out")
+        elapsed = time.monotonic() - start
+        assert elapsed < 5.0, f"超时没有生效，等了 {elapsed:.1f}s"
+    finally:
+        separator.close()
+
+
+def test_stale_response_ids_are_ignored(tmp_path: Path, audio: Path) -> None:
+    """worker 先吐一条过期 id 的响应时，客户端必须继续等自己那一条。
+
+    现实形态是第三方库把上一轮的输出混进了协议通道。过期响应里故意指向一个不存在的
+    音轨：客户端一旦「见谁收谁」，就会在文件校验那一步失败或拿到错误的路径。
+    """
+    script = write_fake_worker(
+        tmp_path,
+        """
+        for raw in sys.stdin:
+            raw = raw.strip()
+            if not raw:
+                continue
+            request = json.loads(raw)
+            if request["cmd"] == "shutdown":
+                print(json.dumps({"id": request["id"], "ok": True}), flush=True)
+                break
+            print(
+                json.dumps(
+                    {
+                        "id": request["id"] - 1,
+                        "ok": True,
+                        "stems": {"vocals": "stale.wav"},
+                    }
+                ),
+                flush=True,
+            )
+            dest = Path(request["dest_dir"])
+            dest.mkdir(parents=True, exist_ok=True)
+            path = dest / "vocals.wav"
+            sf.write(str(path), STEM_SAMPLES, 8000, subtype="FLOAT")
+            print(
+                json.dumps(
+                    {"id": request["id"], "ok": True, "stems": {"vocals": str(path)}}
+                ),
+                flush=True,
+            )
+        """,
+    )
+    separator = SubprocessStemSeparator(worker_command(script))
+    try:
+        stems = separator.separate(audio, tmp_path / "out", stems=[VOCALS])
+
+        assert set(stems) == {VOCALS}
+        assert stems[VOCALS].name == "vocals.wav", "过期 id 的响应被当成结果了"
+    finally:
+        separator.close()
 
 
 def test_claimed_but_missing_stem_file_is_an_error(tmp_path: Path, audio: Path) -> None:
