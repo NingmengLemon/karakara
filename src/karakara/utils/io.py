@@ -163,7 +163,7 @@ def save_audio(
             layout=layout,
         )
         # 编码器名现在来自变量而不是字面量，重载解析拿不到 AudioStream，
-        # 于是显式收窄一次（mypy 与 ty 都认 isinstance）。
+        # 于是显式收窄一次（ty 认 isinstance）。
         assert isinstance(stream, av.AudioStream)
 
         frame = av.AudioFrame.from_ndarray(samples, format=frame_format, layout=layout)

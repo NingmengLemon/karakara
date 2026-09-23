@@ -92,9 +92,9 @@ def build_energy_curve(
 
     e_max = float(energy.max())
     if e_max > 1e-10:
-        energy = energy / e_max  # type: ignore[assignment]
+        energy = energy / e_max
 
-    return energy  # type: ignore[no-any-return]
+    return energy
 
 
 def score_vocal_activity(

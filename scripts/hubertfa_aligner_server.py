@@ -416,7 +416,7 @@ def _load_inference() -> Any:
             ),
         )
     sys.path.insert(0, str(HUBERTFA_CODE))
-    from onnx_infer import InferenceOnnx  # type: ignore[import-not-found]
+    from onnx_infer import InferenceOnnx
 
     inference = InferenceOnnx(onnx_path=model_path)
     inference.load_config()

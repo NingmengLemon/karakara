@@ -423,7 +423,7 @@ class OffsetApp:
     def _on_line_selected(self, _event: tk.Event) -> None:
         """点歌词列表：切到那一行并把播放位置挪过去。"""
         # tkinter 的桩里 curselection 没有注解，而本项目开着 disallow_untyped_calls。
-        selection = self.lyrics_list.curselection()  # type: ignore[no-untyped-call]
+        selection = self.lyrics_list.curselection()
         if not selection:
             return
         index = int(selection[0])

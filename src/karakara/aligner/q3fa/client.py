@@ -79,7 +79,7 @@ class Q3FAClient:
             url, timeout=(self.timeout if timeout is None else timeout)
         )
         resp.raise_for_status()
-        return resp.json()  # type: ignore[no-any-return]
+        return resp.json()
 
     def align(
         self,
@@ -109,7 +109,7 @@ class Q3FAClient:
                 timeout=(self.timeout if timeout is None else timeout),
             )
         resp.raise_for_status()
-        return resp.json()  # type: ignore[no-any-return]
+        return resp.json()
 
     def align_bytes(
         self,
@@ -141,4 +141,4 @@ class Q3FAClient:
             timeout=(self.timeout if timeout is None else timeout),
         )
         resp.raise_for_status()
-        return resp.json()  # type: ignore[no-any-return]
+        return resp.json()

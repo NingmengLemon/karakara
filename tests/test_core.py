@@ -365,8 +365,7 @@ def _run_single_line(
     """跑一次单行对齐，返回收集到调用的 FakeAligner。
 
     显式声明透传的参数而不是 ``**kwargs: object``：后者对类型检查器是
-    ``object``，等于把类型信息丢掉了（ty / mypy 都会报参数类型不符），
-    只能靠 ``type: ignore`` 压住。
+    ``object``，等于把类型信息丢掉了（ty 会报参数类型不符）。
     """
     aligner = FakeAligner(lambda _audio, text: [AlignedWord(text, (0, 200))])
     gen_kara(

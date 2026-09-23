@@ -96,7 +96,7 @@ uv run --group gui python scripts/offset_gui.py song.lrc --audio song.flac
 
 ```bash
 uv run ruff check . && uv run ruff format --check .
-uv run mypy . && uv run ty check
+uv run ty check
 uv run pytest                  # 需要模型/GPU 的用例默认跳过，见 pytest.ini 的 integration 标记
 ```
 

@@ -41,7 +41,7 @@
 
 ## 工程
 
-- **没有 CI。** `ruff` / `mypy` / `ty` / `pytest` 都配好了，但仓库里没有 workflow，
+- **没有 CI。** `ruff` / `ty` / `pytest` 都配好了，但仓库里没有 workflow，
   四个检查都得手动跑。
 - **`samples/` 下有音频二进制入库**（约 19MB），版权归各自的原始创作者所有。
 - **`audio-separator` 后端的模型清单查询要联网**：`--list-models` 需要访问

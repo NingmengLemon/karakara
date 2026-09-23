@@ -50,8 +50,8 @@ def _db_to_linear(db: float) -> float:
 
 def _linear_to_db(x: float | NDArray[np.float32]) -> float | NDArray:
     eps = 1e-10
-    result: NDArray = 20 * np.log10(np.maximum(np.abs(x), eps))  # type: ignore[assignment]
-    return result  # type: ignore[return-value]
+    result: NDArray = 20 * np.log10(np.maximum(np.abs(x), eps))
+    return result
 
 
 def _envelope(
@@ -90,7 +90,7 @@ def _envelope(
     moving_sum = cumsum[window_samples:] - cumsum[:-window_samples]
     rms = np.sqrt(moving_sum / window_samples)
 
-    return rms[:n].astype(np.float32)  # type: ignore[no-any-return]
+    return rms[:n].astype(np.float32)
 
 
 # --------------------------------------------------------------------------

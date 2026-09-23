@@ -80,4 +80,4 @@ av / eval-type-backport / lemony-lrc-parser / numpy / pydantic /
 pypinyin / regex / requests / soundfile / typing-extensions / zhconv
 ```
 
-开发工具（`ruff` / `mypy` / `ty` / `pytest`）在 dev 依赖组里；`uv sync` 会一并装上。
+开发工具（`ruff` / `ty` / `pytest`）在 dev 依赖组里；`uv sync` 会一并装上。

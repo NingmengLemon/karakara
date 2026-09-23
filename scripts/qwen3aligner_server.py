@@ -194,7 +194,7 @@ async def supported_languages() -> list[str] | None:
     """获取模型支持的语言列表。"""
     model = current_aligner()
     if hasattr(model, "get_supported_languages"):
-        return model.get_supported_languages()  # type: ignore[no-any-return]
+        return model.get_supported_languages()
     return None
 
 

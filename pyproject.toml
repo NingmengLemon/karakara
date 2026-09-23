@@ -22,25 +22,8 @@ dependencies = [
 ]
 requires-python = "==3.12.*"
 
-[tool.mypy]
-follow_imports = "normal"
-ignore_missing_imports = true
-show_column_numbers = true
-check_untyped_defs = true
-disallow_untyped_defs = true
-warn_return_any = true
-warn_redundant_casts = true
-disallow_untyped_calls = true
-strict_equality = true
-# tmp/ 是 gitignored 的草稿目录（调试产物、已退役脚本、一次性分析脚本）；
-# models/ 放模型权重，third_party/ 放**上游代码的 git submodule**（HubertFA）。
-# 后两者都不是本仓库的源码，不参与类型检查——否则 `mypy .` 会被几百条第三方代码的
-# 报错淹掉。
-exclude = ["tmp", "models", "third_party"]
-
-
 [tool.ty.src]
-# 这三个脚本**故意**运行在自己的虚拟环境里（PEP 723 内联依赖，见各脚本头部），
+# 这四个脚本**故意**运行在自己的虚拟环境里（PEP 723 内联依赖，见各脚本头部），
 # 它们 import 的 torch / demucs / librosa / fastapi / qwen_asr / audio_separator
 # 本来就不属于主环境。拿主环境的依赖集合去检查它们只会得到一堆
 # unresolved-import，把真正的类型错误淹掉。
@@ -53,11 +36,6 @@ exclude = [
     "models",
     "third_party",
 ]
-
-[tool.ty.rules]
-# 同时挂 mypy 与 ty 时，"这条 type: ignore 多余"不是可执行的信息：一个检查器需要
-# 的抑制注释，另一个常认为多余。抑制注释的治理交给 mypy。
-unused-type-ignore-comment = "ignore"
 
 
 [tool.ruff]
@@ -76,6 +54,7 @@ select = [
     "F",    # pyflakes
     "I",    # isort
     "UP",   # pyupgrade
+    "ANN",  # flake8-annotations
     "B",    # flake8-bugbear
     "BLE",  # flake8-blind-except
     "C4",   # flake8-comprehensions
@@ -84,7 +63,12 @@ select = [
 ]
 # RUF001/002/003 是「字符串/注释里出现了易混淆的 Unicode 字符」。本项目是中文项目，
 # 全角标点（，：；（））是刻意的书写风格，不是笔误。
-ignore = ["RUF001", "RUF002", "RUF003"]
+#
+# ANN401（注解里出现 `Any`）在本项目里几乎全是与无类型第三方打交道的边界
+# （PyAV 的帧对象、tkinter 的 event、sounddevice 的流），收窄它们只会得到一堆
+# cast。真正有价值的是 ANN 的其余部分：**函数必须有注解**（这条以前由 mypy 的
+# disallow_untyped_defs 保证，mypy 移除后交给 ruff）。
+ignore = ["RUF001", "RUF002", "RUF003", "ANN401"]
 # FastAPI 的依赖注入就是靠「在默认值里调用 File()/Form()/Depends()」，
 # B008 在这类文件上是误报。
 # scripts/ 下的 worker 脚本同样如此（它们要 decorate 路由或读 sys.argv）。
@@ -140,12 +124,11 @@ explicit = true
 dev = [
     "ipykernel>=6.31.0",
     "modelscope>=1.35.3",
-    "mypy>=1.18.2",
     "pytest>=8.4.2",
     "pytest-asyncio>=1.2.0",
     "pytest-cov>=7.0.0",
     "ruff>=0.15.8",
-    # 放在 dev 里是为了让 mypy/ty 能解析 `karakara.gui.player` 的 import；
+    # 放在 dev 里是为了让 ty 能解析 `karakara.gui.player` 的 import；
     # 运行时它属于下面的 gui 组（GUI 是可选入口，主程序不需要它）。
     "sounddevice>=0.5.1",
     "ty>=0.0.80",

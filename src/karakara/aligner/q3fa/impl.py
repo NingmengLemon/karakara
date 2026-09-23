@@ -55,7 +55,7 @@ def extract_words(response: Any) -> list[Q3FAAlignedWord]:
         words = response.get("words")
         if not isinstance(words, list):
             raise Q3FAProtocolError(f"响应缺少 words 数组: {response!r}")
-        return words  # type: ignore[return-value]
+        return words
     if isinstance(response, list):
         if len(response) != 1:
             raise Q3FAProtocolError(

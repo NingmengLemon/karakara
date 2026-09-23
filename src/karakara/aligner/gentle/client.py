@@ -169,7 +169,7 @@ class GentleClient:
                 timeout=(self.timeout if timeout is None else timeout),
             )
         resp.raise_for_status()
-        return resp.json()  # type: ignore
+        return resp.json()
 
     def submit_bytes_sync(
         self,
@@ -196,7 +196,7 @@ class GentleClient:
         )
         resp.raise_for_status()
         result = resp.json()
-        return result  # type: ignore
+        return result
 
     def get_status(self, uid: str, timeout: float | None = None) -> dict[str, Any]:
         """
@@ -210,7 +210,7 @@ class GentleClient:
             url, timeout=(self.timeout if timeout is None else timeout)
         )
         resp.raise_for_status()
-        return resp.json()  # type: ignore
+        return resp.json()
 
     def poll_status(
         self, uid: str, interval: float = 2.0, timeout: float = 300.0
@@ -232,7 +232,7 @@ class GentleClient:
                 status = resp.json()
                 st = str(status.get("status", "")).upper()
                 if st in ("OK", "ERROR"):
-                    return status  # type: ignore
+                    return status
             else:
                 resp.raise_for_status()
             if (time.time() - start) > timeout:

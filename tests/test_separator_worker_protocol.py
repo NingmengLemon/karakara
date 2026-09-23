@@ -262,7 +262,7 @@ def _write_mp3(path: Path, *, seconds: float = 1.5) -> Path:
     with av.open(str(path), "w", format="mp3") as container:
         stream = container.add_stream("libmp3lame", rate=_MP3_RATE)
         # add_stream 的返回类型是 Video/Audio/SubtitleStream 的联合；按模板名收窄，
-        # 免得 mypy 与 ty 都对着 .layout/.encode 报 union-attr。
+        # 免得 ty 对着 .layout/.encode 报 union-attr。
         assert isinstance(stream, av.AudioStream)
         stream.layout = "stereo"
         frame = av.AudioFrame.from_ndarray(samples, format="fltp", layout="stereo")
