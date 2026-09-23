@@ -30,6 +30,7 @@ from karakara.interactive import ask_for_input_file, ask_for_output_path
 from karakara.logging import setup_logging
 from karakara.preprocess import AudioPreprocessConfig
 from karakara.separator import SubprocessStemSeparator
+from karakara.trim import TailTrimConfig
 from karakara.utils.metadata import MetadataFilter
 
 #: 仓库自带的元数据过滤配置。刻意相对**本文件**定位而不是 CWD，
@@ -173,6 +174,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--trim-line-tail",
+        action="store_true",
+        help=(
+            "把每行的音频窗口右端从「下一行起点」提前到「人声结束 + 300ms」（默认关闭）。"
+            "一行的窗口常常包含唱完之后的整段间奏，而对齐器的输出是对整段的连续划分，"
+            "最后一个单元会把这段间奏吃掉、把行尾拖进间奏里（实测 1.5%% 的行晚于 1s，"
+            "最严重 88s，最后一行尤其容易）。判据有一个已知失败模式：安静间隙之后的短促"
+            "人声可能被漏掉，因此带了一道守卫（裁剪点之后仍有活跃人声就不裁）"
+        ),
+    )
+    parser.add_argument(
         "--existing-byword-policy",
         choices=("realign", "preserve"),
         default="realign",
@@ -269,6 +281,11 @@ def build_preprocess_config(args: argparse.Namespace) -> AudioPreprocessConfig:
     )
 
 
+def build_trim_config(args: argparse.Namespace) -> TailTrimConfig | None:
+    """按 CLI 选项构造行尾裁剪配置（``--trim-line-tail`` 关闭时为 ``None``）。"""
+    return TailTrimConfig() if args.trim_line_tail else None
+
+
 def resolve_offset(args: argparse.Namespace) -> float | None:
     """将 CLI 偏移选项转为流水线参数（``--no-offset-estimate`` 等价于 ``--offset 0``）。"""
     if args.no_offset_estimate:
@@ -325,6 +342,7 @@ def run_batch(args: argparse.Namespace) -> int:
                     aligner_language=args.aligner_language,
                     target_lang=args.target_lang,
                     refine_collapsed_words=args.refine_collapsed_words,
+                    trim_line_tail=build_trim_config(args),
                 )
             except Exception as exc:
                 failures += 1
@@ -376,6 +394,7 @@ def run_single(args: argparse.Namespace) -> int:
             aligner_language=args.aligner_language,
             target_lang=args.target_lang,
             refine_collapsed_words=args.refine_collapsed_words,
+            trim_line_tail=build_trim_config(args),
         )
     finally:
         aligner.close()

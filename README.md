@@ -59,6 +59,7 @@ uv run --group gui python scripts/offset_gui.py song.lrc --audio song.flac
 | `--offset`、`--no-offset-estimate` | 手动全局偏移（ms）/ 完全不偏移 |
 | `--min-vocal-activity` | 低于该归一化人声活动度的行不对齐（默认 0.01） |
 | `--refine-collapsed-words` | 把零长度的词摊进其后的空隙（**推断值**，默认关闭） |
+| `--trim-line-tail` | 把每行的音频窗口裁到「人声结束 + 300ms」，免得行尾拖进间奏（默认关闭） |
 | `--metadata-filter`、`--strict-pairs` | 元数据行配置 / 要求所有 LRC 都有配对音频 |
 | `--dump-dir`、`--sep-work-dir` | 调试音频导出目录 / 分离中间产物目录 |
 | `--existing-byword-policy {realign,preserve}`、`--fail-fast` | 已有逐字标签的行怎么办 / 批处理遇错即停 |

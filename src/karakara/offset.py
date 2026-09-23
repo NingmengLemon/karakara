@@ -270,6 +270,39 @@ def first_lyric_timestamp(
     return min(starts) if starts else None
 
 
+def detect_last_vocal_activity(
+    energy: NDArray[np.float32],
+    *,
+    window_ms: float = 50.0,
+    relative_threshold: float = DEFAULT_VOCAL_RELATIVE_THRESHOLD,
+    min_run_ms: float = 200.0,
+) -> int | None:
+    """最后一次「持续有人声」的结束时刻（ms），检不出返回 ``None``。
+
+    与 :func:`detect_first_vocal_onset` 对称：只看「人声到哪一刻还在」，不依赖某个能量
+    判据的形式。它服务的是「一行唱完之后还剩多少间奏」这个问题（见 :mod:`karakara.trim`）。
+
+    判据是「连续 ``min_run_ms`` 内每窗都超过阈值」，因此**安静间隙之后的短促人声会被
+    漏掉**。这是已知的失败模式，调用方需要自己加守卫（``karakara.trim`` 里有一条）。
+    """
+    if energy.size == 0:
+        return None
+    threshold = float(energy.max()) * relative_threshold
+    min_run = max(1, round(min_run_ms / window_ms))
+
+    index = len(energy) - 1
+    while index >= 0:
+        if float(energy[index]) <= threshold:
+            index -= 1
+            continue
+        end = index
+        while index >= 0 and float(energy[index]) > threshold:
+            index -= 1
+        if end - index >= min_run:
+            return int((end + 1) * window_ms)
+    return None
+
+
 def suggest_offset_from_onset(
     lyrics: Lyrics,
     energy: NDArray[np.float32],

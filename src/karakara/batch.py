@@ -14,6 +14,7 @@ from .aligner import HttpAligner
 from .core import ExistingBywordPolicy, gen_kara
 from .preprocess import AudioPreprocessConfig
 from .separator import AbstractStemSeparator
+from .trim import TailTrimConfig
 from .utils.lrc import load_lyrics, save_lyrics
 from .utils.metadata import MetadataFilter
 
@@ -124,6 +125,7 @@ def process_job(
     aligner_language: str = "auto",
     target_lang: str | None = None,
     refine_collapsed_words: bool = False,
+    trim_line_tail: TailTrimConfig | None = None,
 ) -> None:
     """处理一组输入，并在函数返回时释放该任务的大型音频对象。"""
     lyrics = load_lyrics(job.lyrics_path)
@@ -142,6 +144,7 @@ def process_job(
         aligner_language=aligner_language,
         target_lang=target_lang,
         refine_collapsed_words=refine_collapsed_words,
+        trim_line_tail=trim_line_tail,
     )
     save_lyrics(aligned, job.output_path)
 

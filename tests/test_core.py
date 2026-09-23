@@ -15,6 +15,7 @@ from karakara.aligner.abc import AbstractAligner, AlignedWord, LangCode
 from karakara.core import gen_kara
 from karakara.preprocess import AudioPreprocessConfig
 from karakara.separator.abc import AbstractStemSeparator
+from karakara.trim import TailTrimConfig
 from karakara.utils.metadata import MetadataFilter
 
 #: 测试用的分离采样率。刻意取一个非默认值（不是 44100），这样"主进程到底有
@@ -177,6 +178,85 @@ def test_passes_all_vocal_channels_to_aligner(
     assert aligner.received_audio[0].shape == (2, 15)
     np.testing.assert_array_equal(aligner.received_audio[0][1], np.ones(15, np.float32))
     assert _line_text(result) == "hello"
+
+
+def _tail_audio() -> np.ndarray:
+    """10Hz 采样、共 200 个采样（20 秒）：前 30 个采样有声，其余静音。
+
+    两行歌词：第 0 行从 0 开始（窗口到第 1 行的起点 10s），第 1 行在 10s。
+    人声在 3s 结束，所以第 0 行的窗口尾部有 7 秒静音可供裁剪。
+    """
+    vocal = np.zeros((2, 200), dtype=np.float32)
+    vocal[:, :30] = 0.5
+    return vocal
+
+
+def test_trim_line_tail_shortens_the_segment_sent_to_the_aligner(
+    metadata_filter: MetadataFilter,
+) -> None:
+    """开启裁剪后，第 0 行送出去的音频应当从 10s 缩到「人声结束 + 余量」。"""
+    aligner = FakeAligner(lambda _audio, text: [AlignedWord(text, (0, 100))])
+
+    gen_kara(
+        Lyrics.loads("[00:00.00]first\n[00:10.00]second"),
+        "ignored.wav",
+        aligner=aligner,
+        separator=FakeSeparator(_tail_audio()),
+        metadata_filter=metadata_filter,
+        preprocess_config=AudioPreprocessConfig(
+            normalize=False, suppress_vibrato=False, compress=False
+        ),
+        offset_ms=0,
+        trim_line_tail=TailTrimConfig(),
+    )
+
+    # 10Hz：窗口 0..100 采样（10s），人声到 30 采样（3s）结束，余量 300ms = 3 采样
+    assert aligner.received_audio[0].shape == (2, 33)
+
+
+def test_without_trim_line_tail_the_segment_keeps_the_silent_tail(
+    metadata_filter: MetadataFilter,
+) -> None:
+    """不开裁剪时行为不变：整段窗口（含尾部静音）都送出去。"""
+    aligner = FakeAligner(lambda _audio, text: [AlignedWord(text, (0, 100))])
+
+    gen_kara(
+        Lyrics.loads("[00:00.00]first\n[00:10.00]second"),
+        "ignored.wav",
+        aligner=aligner,
+        separator=FakeSeparator(_tail_audio()),
+        metadata_filter=metadata_filter,
+        preprocess_config=AudioPreprocessConfig(
+            normalize=False, suppress_vibrato=False, compress=False
+        ),
+        offset_ms=0,
+    )
+
+    assert aligner.received_audio[0].shape == (2, 100)
+
+
+def test_trim_line_tail_leaves_a_short_tail_alone(
+    metadata_filter: MetadataFilter,
+) -> None:
+    """尾部只有 800ms（< min_tail_ms）时不该裁：用同样两行歌词，把人声拉到 9.2s 结束。"""
+    vocal = np.zeros((2, 200), dtype=np.float32)
+    vocal[:, :92] = 0.5  # 9.2s 之前都有声 → 尾部只有 0.8s
+    aligner = FakeAligner(lambda _audio, text: [AlignedWord(text, (0, 100))])
+
+    gen_kara(
+        Lyrics.loads("[00:00.00]first\n[00:10.00]second"),
+        "ignored.wav",
+        aligner=aligner,
+        separator=FakeSeparator(vocal),
+        metadata_filter=metadata_filter,
+        preprocess_config=AudioPreprocessConfig(
+            normalize=False, suppress_vibrato=False, compress=False
+        ),
+        offset_ms=0,
+        trim_line_tail=TailTrimConfig(),
+    )
+
+    assert aligner.received_audio[0].shape == (2, 100)
 
 
 def test_skips_alignment_for_silent_lyric_line(

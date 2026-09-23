@@ -52,6 +52,7 @@ def _batch_args(batch_dir: Path, **overrides: object) -> argparse.Namespace:
         "min_vocal_activity": 0.01,
         "existing_byword_policy": "realign",
         "refine_collapsed_words": False,
+        "trim_line_tail": False,
     }
     base.update(overrides)
     return argparse.Namespace(**base)

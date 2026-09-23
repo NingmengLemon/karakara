@@ -32,6 +32,7 @@ from karakara.preprocess import (
     suppress_vibrato,
 )
 from karakara.separator.abc import AbstractStemSeparator
+from karakara.trim import TRIM_WINDOW_MS, TailTrimConfig, trim_window_end
 from karakara.utils.io import load_audio_native, ms2sample
 from karakara.utils.lang import detect_dominant_lang, detect_lang
 from karakara.utils.metadata import MetadataFilter
@@ -522,6 +523,7 @@ def gen_kara(
     min_vocal_activity: float = 0.01,
     existing_byword_policy: ExistingBywordPolicy = "realign",
     refine_collapsed_words: bool = False,
+    trim_line_tail: TailTrimConfig | None = None,
 ) -> Lyrics:
     """根据音频和行级歌词生成词级逐字歌词。
 
@@ -539,6 +541,10 @@ def gen_kara(
     因为那是**推断值**——模型只说了"这两个边界落在同一帧里"（qwen3 后端是 80ms 的
     离散槽位，HubertFA 是 10ms 帧）。无论开关与否，零长度单元的**文本**都不会丢，
     只会并进相邻 token。
+
+    ``trim_line_tail`` 对应 ``--trim-line-tail``：把窗口右端从「下一行起点」提前到
+    「人声结束 + 余量」，免得尾部间奏被对齐器摊给最后一个单元、把行尾拖到间奏里
+    （参数、守卫与实测依据见 :mod:`karakara.trim`）。``None`` 表示关闭。
     """
     if min_vocal_activity < 0:
         raise ValueError("min_vocal_activity must be non-negative")
@@ -550,6 +556,7 @@ def gen_kara(
     config = (
         preprocess_config if preprocess_config is not None else AudioPreprocessConfig()
     )
+    trim_config = trim_line_tail
     vocal_np, sample_rate = _preprocess_vocals(
         audio,
         separator=separator,
@@ -573,6 +580,17 @@ def gen_kara(
     logger.info(f"aligner language: {language or 'aligner default'}")
     # 能量曲线只建一次：偏移校验与逐行人声活动度都用它。
     energy_curve = build_energy_curve(vocal_np, sample_rate)
+    # 裁剪判定另建一条更细的曲线（20ms）。刻意不动上面那条：偏移估计的两道校验是在
+    # 50ms 口径上验过的，换分辨率会动到已经被实测校准过的东西。
+    #
+    # 窗口不能细于一个采样（build_energy_curve 会把窗口取整成整数个采样），否则曲线的
+    # 时间轴与真实时间对不上；采样率很低时要跟着放宽，并把同一个值传给判定函数。
+    trim_window_ms = max(TRIM_WINDOW_MS, 1000.0 / sample_rate)
+    trim_curve = (
+        build_energy_curve(vocal_np, sample_rate, trim_window_ms)
+        if trim_config is not None
+        else None
+    )
     _apply_offset(
         working_lyrics,
         vocal_np,
@@ -585,6 +603,7 @@ def gen_kara(
     result = Lyrics(metadata=working_lyrics.metadata)
     attempted = 0
     failed = 0
+    trimmed_lines = 0
     stats = ZeroLengthStats()
     for index, line in enumerate(working_lyrics):
         text = line.text
@@ -616,6 +635,24 @@ def gen_kara(
             continue
 
         segment_end = end if end is not None else total_samples
+        if trim_config is not None and trim_curve is not None:
+            decision = trim_window_end(
+                trim_curve,
+                start / sample_rate * 1000,
+                segment_end / sample_rate * 1000,
+                config=trim_config,
+                window_ms=trim_window_ms,
+            )
+            if decision.trimmed:
+                logger.info(
+                    f"trimmed line {index} tail: {decision.reason} "
+                    f"({segment_end / sample_rate * 1000:.0f}ms -> {decision.end_ms:.0f}ms)"
+                )
+                segment_end = min(segment_end, ms2sample(decision.end_ms, sample_rate))
+                trimmed_lines += 1
+            else:
+                logger.debug(f"line {index} tail not trimmed: {decision.reason}")
+
         activity = score_vocal_activity(
             energy_curve,
             start_ms=start / sample_rate * 1000,
@@ -629,7 +666,11 @@ def gen_kara(
             result.append(_preserved_line(line))
             continue
 
-        audio_piece = vocal_np[:, start:end] if end is not None else vocal_np[:, start:]
+        audio_piece = (
+            vocal_np[:, start:segment_end]
+            if segment_end < total_samples
+            else vocal_np[:, start:]
+        )
         aligned_line, line_stats = _align_line(
             line,
             text,
@@ -650,6 +691,11 @@ def gen_kara(
         )
 
     _check_alignment_health(attempted=attempted, failed=failed)
+    if trim_config is not None:
+        logger.info(
+            f"trimmed the tail of {trimmed_lines}/{attempted} aligned line(s) "
+            f"(窗口右端提前到人声结束 + {trim_config.margin_ms}ms)"
+        )
     _report_zero_length(stats)
     return result
 
