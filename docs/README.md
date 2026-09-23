@@ -43,6 +43,7 @@
 | [2026-09-12-metadata-corpus-scan.md](records/2026-09-12-metadata-corpus-scan.md) | 6622 个 LRC 的扫描、各开关的判据、假阳性清单 |
 | [2026-09-12-separator-ab.md](records/2026-09-12-separator-ab.md) | 分离后端的代理指标与已测结果、一次失效的度量 |
 | [2026-09-18-aligner-choice-and-stability.md](records/2026-09-18-aligner-choice-and-stability.md) | 人耳裁决、V4 扰动稳定性（两个后端）、复现命令 |
+| [2026-09-23-line-tail-trimming.md](records/2026-09-23-line-tail-trimming.md) | 「行尾拖进间奏」的普遍程度（1.5%）、把片段裁到人声结束的 A/B 与误切判读 |
 
 新记录的文件名用 `YYYY-MM-DD-主题.md`，开头写清「这是记录，不是规范」，并链接对应的现状文档。
 
