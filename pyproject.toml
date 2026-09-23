@@ -145,10 +145,16 @@ dev = [
     "pytest-asyncio>=1.2.0",
     "pytest-cov>=7.0.0",
     "ruff>=0.15.8",
+    # 放在 dev 里是为了让 mypy/ty 能解析 `karakara.gui.player` 的 import；
+    # 运行时它属于下面的 gui 组（GUI 是可选入口，主程序不需要它）。
+    "sounddevice>=0.5.1",
     "ty>=0.0.80",
     "types-requests>=2.32.4.20250913",
 ]
 qwenaligner = ["fastapi>=0.135.3", "pydantic>=2.12.4", "qwen-asr>=0.0.6"]
+# 图形工具（`scripts/offset_gui.py`）用：tkinter 是标准库，只有播放需要额外依赖。
+# 缺这个包时 GUI 仍能看波形、调偏移、写回，只是不能出声。
+gui = ["sounddevice>=0.5.1"]
 
 [tool.uv]
 package = true

@@ -38,6 +38,12 @@ uv run --script scripts/separator_worker.py --info
 uv run --script scripts/separator_worker_audio_separator.py --list-models
 ```
 
+时间轴整体偏了（自动估计不可靠、需要人工判断），用图形工具对照波形调偏移并写回歌词：
+
+```bash
+uv run --group gui python scripts/offset_gui.py song.lrc --audio song.flac
+```
+
 `uv run main.py --help` 是完整的开关清单。
 
 ## 常用开关
@@ -78,6 +84,7 @@ uv run --script scripts/separator_worker_audio_separator.py --list-models
 | 数据怎么流动、worker 协议、代码布局 | [docs/current/pipeline.md](docs/current/pipeline.md) |
 | 对齐契约、两个后端、零长度单元怎么处理 | [docs/current/aligner.md](docs/current/aligner.md) |
 | 时间轴偏了怎么办 | [docs/current/offset.md](docs/current/offset.md) |
+| 用图形工具调偏移、写回歌词 | [docs/current/offset-gui.md](docs/current/offset-gui.md) |
 | 某行字幕被当署名吃掉了 | [docs/current/metadata-filter.md](docs/current/metadata-filter.md) |
 | 环境装不上、GPU 没生效 | [docs/current/environments.md](docs/current/environments.md) |
 | 哪些坑还在 | [docs/current/limits.md](docs/current/limits.md) |

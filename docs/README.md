@@ -16,7 +16,7 @@
 - 想跑起来、想知道开关有哪些 → [../README.md](../README.md)
 - 想知道一次运行里数据怎么流动、worker 协议、代码在哪 → [current/pipeline.md](current/pipeline.md)
 - 对齐精度为什么是这样、零长度单元怎么处理 → [current/aligner.md](current/aligner.md)
-- 时间轴整体偏了怎么办 → [current/offset.md](current/offset.md)
+- 时间轴整体偏了怎么办 → [current/offset.md](current/offset.md) 与 [current/offset-gui.md](current/offset-gui.md)
 - 某一行字幕被当成署名吃掉了 / 想改过滤规则 → [current/metadata-filter.md](current/metadata-filter.md)
 - 环境装不上、GPU 没生效、uv 缓存作怪 → [current/environments.md](current/environments.md)
 - 想知道哪些坑还在 → [current/limits.md](current/limits.md)
@@ -29,6 +29,7 @@
 | [pipeline.md](current/pipeline.md) | 主流程、两个 worker 的架构与协议、分离后端、代码布局 |
 | [aligner.md](current/aligner.md) | `/align` 契约、两个后端、语言判定、零长度单元的三层处理 |
 | [offset.md](current/offset.md) | 全局偏移的算法、两道校验、负时间戳夹取、已知限制 |
+| [offset-gui.md](current/offset-gui.md) | 人工对照波形与歌词调偏移的桌面工具、写回歌词文件的行为 |
 | [metadata-filter.md](current/metadata-filter.md) | 五种过滤策略与默认值、假阳性纪律、为什么不预先 pop |
 | [environments.md](current/environments.md) | 三套环境、CUDA 索引、uv 脚本环境缓存的坑 |
 | [limits.md](current/limits.md) | 现在还成立的限制与副作用（产物质量 / 行为 / 工程） |
