@@ -56,7 +56,7 @@ uv run --group gui python scripts/offset_gui.py song.lrc --audio song.flac
 | `--separator-device`、`--separator-model-dir`、`--separator-timeout` | 分离设备、模型仓库目录、单次请求超时（默认 900s） |
 | `--aligner-backend {hfa,qwen3}`、`--aligner-url`、`--aligner-timeout` | 对齐后端（默认 `hfa`）、地址、超时（默认 120s） |
 | `--aligner-language {auto,zh,ja,en,yue,ko}`、`--target-lang` | 送给对齐器的语言 / 只对齐该语言的行 |
-| `--offset`、`--no-offset-estimate` | 手动全局偏移（ms）/ 完全不偏移 |
+| `--offset`、`--estimate-offset` | 手动全局偏移（ms）/ 显式要求自动估计；**默认两者都不做**（即不偏移） |
 | `--min-vocal-activity` | 低于该归一化人声活动度的行不对齐（默认 0.01） |
 | `--refine-collapsed-words` | 把零长度的词摊进其后的空隙（**推断值**，默认关闭） |
 | `--trim-line-tail` | 把每行的音频窗口裁到「人声结束 + 300ms」，免得行尾拖进间奏（默认关闭） |
@@ -69,7 +69,8 @@ uv run --group gui python scripts/offset_gui.py song.lrc --audio song.flac
 - **默认对齐后端是 HubertFA**（为歌声训练，10ms 帧）。日文实测零长度单元 1.9%、行区间覆盖率
   88.8%；代价是日文路径会丢促音、汉字读音靠猜。可选的 `qwen3` 后端量化在 80ms、零长度单元
   22.5%（最高一首 41.8%）。
-- **全局偏移估计不可靠**，所以自动偏移极度保守：证据不足就不动，宁可不动也不要动错。
+- **全局偏移默认不动。** 自动估计实测误判偏多（两条能量判据各自都会错、且错在不同的歌上），
+  所以要偏移请用 `--offset` 手动给或走图形工具；`--estimate-offset` 是显式承担误判风险的选择。
 - **歌词错一个字会「从错处往后全毁」**，而且产物上看不出异常。
 - **LRC 与音频版本不匹配的输入无解**，需要人工发现。
 

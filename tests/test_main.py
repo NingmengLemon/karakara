@@ -47,7 +47,7 @@ def _batch_args(batch_dir: Path, **overrides: object) -> argparse.Namespace:
         "separator_model_dir": None,
         "separator_timeout": 900.0,
         "fail_fast": False,
-        "no_offset_estimate": True,
+        "estimate_offset": False,
         "offset": None,
         "min_vocal_activity": 0.01,
         "existing_byword_policy": "realign",

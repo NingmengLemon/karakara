@@ -81,16 +81,24 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="调试音频导出目录（批处理时在其下按相对路径创建子目录）",
     )
-    parser.add_argument(
+    offset_group = parser.add_mutually_exclusive_group()
+    offset_group.add_argument(
         "--offset",
         type=float,
         default=None,
-        help="手动指定全局时间偏移（ms）。正值=LRC偏早需延迟, 负值=LRC偏晚需提前。不指定时自动估计",
+        help=(
+            "手动指定全局时间偏移（ms）。正值=LRC偏早需延迟, 负值=LRC偏晚需提前。"
+            "默认不偏移；这是拿到正确偏移的推荐方式（也可用 scripts/offset_gui.py 对着波形调）"
+        ),
     )
-    parser.add_argument(
-        "--no-offset-estimate",
+    offset_group.add_argument(
+        "--estimate-offset",
         action="store_true",
-        help="禁用自动偏移估计（相当于 --offset 0）",
+        help=(
+            "显式要求自动估计全局偏移（默认关闭）。实测误判偏多：两条能量判据各自都会错、"
+            "且错在不同的歌上，而错一次会把整首歌的切段推离人声。开启后估计值还要过两道"
+            "互相独立的校验，任一不通过仍按不偏移处理"
+        ),
     )
     parser.add_argument(
         "--aligner-backend",
@@ -287,9 +295,11 @@ def build_trim_config(args: argparse.Namespace) -> TailTrimConfig | None:
 
 
 def resolve_offset(args: argparse.Namespace) -> float | None:
-    """将 CLI 偏移选项转为流水线参数（``--no-offset-estimate`` 等价于 ``--offset 0``）。"""
-    if args.no_offset_estimate:
-        return 0.0
+    """CLI 的**手动**偏移；没给就是 ``None``（表示不偏移）。
+
+    是否自动估计是另一件事，由 ``args.estimate_offset`` 单独传给流水线——两者互斥
+    （``--offset`` 与 ``--estimate-offset`` 在同一个互斥组里）。
+    """
     offset = args.offset
     return offset if isinstance(offset, float) else None
 
@@ -337,6 +347,7 @@ def run_batch(args: argparse.Namespace) -> int:
                     dump_dir=item_dump_dir,
                     separate_work_dir=args.sep_work_dir,
                     offset_ms=resolve_offset(args),
+                    estimate_offset=args.estimate_offset,
                     min_vocal_activity=args.min_vocal_activity,
                     existing_byword_policy=args.existing_byword_policy,
                     aligner_language=args.aligner_language,
@@ -389,6 +400,7 @@ def run_single(args: argparse.Namespace) -> int:
             dump_dir=args.dump_dir,
             separate_work_dir=args.sep_work_dir,
             offset_ms=resolve_offset(args),
+            estimate_offset=args.estimate_offset,
             min_vocal_activity=args.min_vocal_activity,
             existing_byword_policy=args.existing_byword_policy,
             aligner_language=args.aligner_language,

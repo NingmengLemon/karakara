@@ -193,29 +193,42 @@ def _apply_offset(
     sample_rate: int,
     *,
     metadata_filter: MetadataFilter,
-    offset_ms: float | None,
+    offset_ms: float | None = None,
+    estimate: bool = False,
     energy_curve: NDArray | None = None,
 ) -> float:
-    """估计并就地应用全局时间偏移，返回实际生效的偏移量（ms）。
+    """就地应用全局时间偏移，返回实际生效的偏移量（ms）。
 
-    三处刻意的行为：
+    偏移有三种来源，优先级从高到低：
 
-    1. **负时间戳逐个夹到 0**，而不是把整条时间轴回退。回退会让修正彻底失效：
-       LRC 里几乎总有一条 ``[00:00.000]`` 的元数据行（如「作词 : xxx」），它不
-       参与对齐，却会把任何负偏移完整抵消掉——连 ``--offset`` 手动指定的负值也
-       会被静默丢弃（实测：含 0ms 行的文件上 ``--offset -200`` 的净偏移为 0）。
-    2. **自动估计要过两道互相独立的校验**（见下），任一不通过就按不偏移处理：
-       行区间对比度校验（:func:`~karakara.offset.validate_estimated_offset`）与
-       「第一次持续人声」锚点校验（:func:`~karakara.offset.suggest_offset_from_onset`）。
-    3. 手动 ``--offset`` 不受校验约束——用户的显式意图优先。
+    1. **手动** ``offset_ms``（对应 ``--offset``）：直接用，不受任何校验约束。
+    2. **自动估计**（``estimate=True``，对应 ``--estimate-offset``）：估一个值，再过两道
+       互相独立的校验，任一不通过就按不偏移处理。
+    3. **什么都不做**（默认）：按不偏移处理。
 
-    为什么自动偏移这么保守：实测三首真实曲目，两条能量判据**各自都会错、且错在
-    不同的歌上**（见 `validate_estimated_offset` 的表格），其中一首 LRC 与音频
-    属于不同剪辑、需要 +17 秒的偏移，任何能量判据都救不回来。自动偏移宁可不动，
-    也不要动错——动错的代价是把整首歌的切段推离人声。
+    自动估计**默认关闭**是刻意的：实测它误判偏多（两条能量判据各自都会错、且错在不同的
+    歌上，见 :func:`~karakara.offset.validate_estimated_offset` 的表格），而错一次的代价
+    是把整首歌的切段推离人声。要偏移请用 ``--offset`` 手动指定，或者用图形工具
+    （``scripts/offset_gui.py``）对着波形调。
+
+    另两处刻意的行为：
+
+    * **负时间戳逐个夹到 0**，而不是把整条时间轴回退。回退会让修正彻底失效：LRC 里几乎
+      总有一条 ``[00:00.000]`` 的元数据行（如「作词 : xxx」），它不参与对齐，却会把任何
+      负偏移完整抵消掉，连手动指定的负值也会被静默丢弃（实测：含 0ms 行的文件上
+      ``--offset -200`` 的净偏移为 0）。
+    * 自动估计的两道校验是：行区间对比度（:func:`~karakara.offset.validate_estimated_offset`）
+      与「第一次持续人声」锚点（:func:`~karakara.offset.suggest_offset_from_onset`）。
     """
-    applied_offset = offset_ms
-    if applied_offset is None:
+    if offset_ms is not None and estimate:
+        raise ValueError(
+            "offset_ms 与 estimate 只能给一个：手动偏移优先，不该同时要求自动估计"
+        )
+
+    applied_offset = 0.0
+    if offset_ms is not None:
+        applied_offset = float(offset_ms)
+    elif estimate:
         applied_offset = estimate_offset(
             audio, lyrics, sample_rate, metadata_filter=metadata_filter
         )
@@ -226,6 +239,13 @@ def _apply_offset(
                 applied_offset,
                 metadata_filter=metadata_filter,
             )
+    else:
+        logger.info(
+            "自动偏移估计未启用（默认关闭，误判偏多）；按不偏移处理。"
+            "要偏移请用 --offset 手动指定，或用 scripts/offset_gui.py 对着波形调，"
+            "也可以显式加 --estimate-offset 让它自己估（不保证准）"
+        )
+
     if applied_offset == 0:
         return 0.0
 
@@ -520,6 +540,7 @@ def gen_kara(
     dump_dir: str | Path | None = None,
     separate_work_dir: str | Path | None = None,
     offset_ms: float | None = None,
+    estimate_offset: bool = False,
     min_vocal_activity: float = 0.01,
     existing_byword_policy: ExistingBywordPolicy = "realign",
     refine_collapsed_words: bool = False,
@@ -529,6 +550,10 @@ def gen_kara(
 
     已有逐字时间标签的行由 ``existing_byword_policy`` 控制：``"realign"`` 会
     将所有 token 文本拼接后重新对齐；``"preserve"`` 则原样保留。
+
+    ``offset_ms`` 是**手动**全局偏移（``None`` 表示不偏移）；``estimate_offset`` 才是
+    要求自动估计。两者互斥，同时给会报错。自动估计默认关闭：实测它误判偏多，要偏移应当
+    用 ``offset_ms`` 手动指定或走图形工具（``scripts/offset_gui.py``）。
 
     ``target_lang`` 用于**跳过**语言不符的行（例如夹在日文歌词里的中文翻译行）；
     ``aligner_language`` 决定**送给对齐器**的语言，``"auto"`` 时按整首歌的
@@ -597,6 +622,7 @@ def gen_kara(
         sample_rate,
         metadata_filter=metadata_filter,
         offset_ms=offset_ms,
+        estimate=estimate_offset,
         energy_curve=energy_curve,
     )
 

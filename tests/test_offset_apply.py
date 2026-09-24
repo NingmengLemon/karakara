@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from logging import WARNING
+from logging import INFO, WARNING
 
 import numpy as np
 import pytest
@@ -303,7 +303,7 @@ def test_auto_offset_is_dropped_when_it_fails_validation(
             SILENT,
             1000,
             metadata_filter=filter_with_keywords(),
-            offset_ms=None,
+            estimate=True,
             energy_curve=energy,
         )
 
@@ -349,7 +349,7 @@ def test_auto_offset_is_applied_when_it_passes_validation(
         SILENT,
         1000,
         metadata_filter=filter_with_keywords(),
-        offset_ms=None,
+        estimate=True,
         energy_curve=energy,
     )
 
@@ -377,7 +377,7 @@ def test_auto_offset_is_dropped_when_the_vocal_anchor_disagrees(
             SILENT,
             1000,
             metadata_filter=filter_with_keywords(),
-            offset_ms=None,
+            estimate=True,
             energy_curve=energy,
         )
 
@@ -385,6 +385,49 @@ def test_auto_offset_is_dropped_when_the_vocal_anchor_disagrees(
     assert line_starts(lyrics) == [0, 5000]
     assert any("分歧超过" in record.message for record in caplog.records)
     assert any("不同剪辑" in record.message for record in caplog.records)
+
+
+def test_estimation_is_off_by_default(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """回归：不显式要求时**绝不**自动估计。
+
+    实测自动估计误判偏多（两条能量判据各自都会错、且错在不同的歌上），所以默认按不偏移
+    处理。这里把估计器换成一个「一调用就炸」的替身：只要默认路径碰它，用例立刻失败。
+    """
+    from karakara import core
+
+    def explode(*_args: object, **_kwargs: object) -> float:
+        raise AssertionError("默认路径不该调用 estimate_offset")
+
+    monkeypatch.setattr(core, "estimate_offset", explode)
+    lyrics = Lyrics.loads(TWO_LINES)
+
+    with caplog.at_level(INFO):
+        applied = _apply_offset(
+            lyrics,
+            SILENT,
+            1000,
+            metadata_filter=filter_with_keywords(),
+            energy_curve=_energy_with_band(200, 300),
+        )
+
+    assert applied == 0.0
+    assert line_starts(lyrics) == [5000, 10000]
+    assert any("自动偏移估计未启用" in record.message for record in caplog.records)
+
+
+def test_manual_offset_and_estimation_are_mutually_exclusive() -> None:
+    """同时给手动偏移与自动估计是调用方的 bug，要立刻报错而不是静默取其一。"""
+    with pytest.raises(ValueError, match="只能给一个"):
+        _apply_offset(
+            Lyrics.loads(TWO_LINES),
+            SILENT,
+            1000,
+            metadata_filter=filter_with_keywords(),
+            offset_ms=500.0,
+            estimate=True,
+        )
 
 
 # --------------------------------------------------------------------------
